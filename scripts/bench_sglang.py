@@ -7,10 +7,11 @@ prompt cold-prefill throughput probe. Reports peak VRAM. Compares to jpezzulli
 targets: 171 tok/s C1, 428 tok/s C4 aggregate, ~10-12K tok/s 64K prefill.
 """
 from __future__ import annotations
-import argparse, json, statistics, subprocess, threading, time, urllib.request
+import argparse, json, os, statistics, subprocess, threading, time, urllib.request
 
 PORT = 8001
 MODEL = "pennyroyal"
+OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "results_sglang.json")
 PROMPT = ("You are a coding agent. Implement a thread-safe LRU cache in C++20 with a "
           "templated API (get/put/size/capacity), an intrusive doubly-linked list plus "
           "unordered_map for O(1) ops, a shared_mutex for concurrent reads, and a unit "
@@ -98,7 +99,7 @@ def main():
               f"ttft={best['ttft_ms_median']}ms  peakVRAM={best['peak_vram_mib']}MiB")
 
     # save C1/C4 before the prefill probe (probe can be fragile on some kernels)
-    open("/home/golympie/ai-toolbox/models/qwen38fn/results_sglang.json","w").write(json.dumps(out, indent=2))
+    open(OUT_JSON,"w").write(json.dumps(out, indent=2))
     # cold-prefill probe: moderate prompt (~2K tokens; avoid huge prefills that hit fp8 kernel limits)
     long_prompt = ("Summarize the following.\n" + ("The quick brown fox jumps over the lazy dog. " * 250))
     try:
@@ -109,7 +110,7 @@ def main():
         out["prefill_probe"] = {"prompt_tokens": r["prompt_tokens"], "prefill_tok_s": r["prefill_tok_s"], "ttft_ms": r["ttft_ms"]}
         print(f"prefill probe: {r['prompt_tokens']} toks @ {r['prefill_tok_s']} tok/s (ttft {r['ttft_ms']}ms)")
 
-    open("/home/golympie/ai-toolbox/models/qwen38fn/results_sglang.json","w").write(json.dumps(out, indent=2))
+    open(OUT_JSON,"w").write(json.dumps(out, indent=2))
     print("\nTargets (jpezzulli): C1 171 tok/s, C4 428 tok/s agg, 64K prefill ~10-12K tok/s")
 
 if __name__ == "__main__":

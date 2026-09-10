@@ -1,0 +1,29 @@
+diff --git a/python/sglang/srt/speculative/eagle_worker_v2.py b/python/sglang/srt/speculative/eagle_worker_v2.py
+index 93fdd61761..07a467c633 100644
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -7,6 +7,7 @@ from typing import List, Optional
+ import torch
+ 
+ from sglang.kernels.ops.speculative.topk1 import draft_topk1_postprocess
++from sglang.srt.distributed import get_tp_group
+ from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+ from sglang.srt.environ import envs
+ from sglang.srt.hardware_backend.npu.graph_runner.eagle_draft_extend_npu_graph_runner import (
+@@ -321,7 +322,15 @@ class EagleDraftWorker(EagleDraftWorkerBase):
+ 
+         else:
+             if self.hot_token_id is not None:
+-                head = head.clone()
++                # [sm120 patch 0007] At TP>1 `head` is the vocab-parallel lm_head
++                # slice ([vocab/tp, hidden]) while hot_token_id holds global token
++                # ids; direct indexing goes out of bounds (device-side assert in
++                # vectorized_gather_kernel). All-gather the full head along the
++                # vocab dim first, then slice to the hot tokens.
++                if get_tp_group().world_size > 1:
++                    head = get_tp_group().all_gather(head.contiguous(), dim=0)
++                else:
++                    head = head.clone()
+                 self.hot_token_id = self.hot_token_id.to(head.device)
+                 head.data = head.data[self.hot_token_id]
+ 

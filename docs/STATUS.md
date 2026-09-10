@@ -4,6 +4,45 @@
 Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see git log in
 `../sglang-official`). No Docker. **Beats jpezzulli/sglang-rtxpro6000's published figures by ~35-45%.**
 
+> **Deployment target moved to `testcomp2`: 8× RTX 5090 (sm120, 32 GB/card), TP8.** The TP1
+> figures in this doc are provenance from the 96 GB card. 5090/TP8 ops notes:
+
+## Deployment on testcomp2 (8× RTX 5090, TP8)
+
+- Paths: this repo `/mnt/data/shared/models/qwen3.8-flash-next-nvfp4-sglang`,
+  sglang checkout + `.venv` at `sglang-official/` (branch `qwen4-main-squashed`),
+  model `/mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4`, caches `cache/` in the repo root.
+- sglang is built (editable install) but ships **without the patches** — after every
+  `git pull` run once: `bash scripts/apply_patches.sh` (idempotent; no rebuild needed).
+- **TP8 requires MoE expert parallelism** (`EP_SIZE=8` → `--ep-size 8`, default in both
+  launchers): `moe_intermediate_size 640` under pure TP8 = 80/rank → NVFP4 scale swizzle wants
+  padding (w2 K′=5 groups, not ×4) → "padding … gated activations" assert at load
+  (`modelopt_quant.py`). EP8 keeps the full 640/expert (64 experts/rank) and the shared expert
+  fuses into the EP MoE layer → full load passes. Correct alignment rule: per-rank
+  intermediate must be ×64 → pure-TP valid only for TP 1/2/5 (TP4 = 160/rank is INVALID —
+  earlier docs said otherwise; hit again 2026-09-10, K′=10). On 8×32 GB no pure-TP fits;
+  fallback candidate: `TP=4 EP_SIZE=4` (4 cards only, untested).
+- **FR-Spec at TP>1 needs patch 0007**: `eagle_worker_v2.init_lm_head` gathered the draft
+  lm_head (`head.data[self.hot_token_id]`) with global ids against the vocab-parallel slice
+  (31040 rows/rank at TP8) → device-side `vectorized_gather_kernel` OOB assert during draft
+  init (crashed 2026-09-10 22:59 after a fully clean TP8+EP8 model load + KV pool alloc of
+  2,060,224 tokens). 0007 all-gathers the full head along the vocab dim first.
+- `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
+  `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
+  server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
+  Run under tmux/screen to survive disconnects; no systemd unit, no auto-start.
+- Pre-flight: launchers abort while any GPU holds >4 GB (the box also runs a vLLM TP8 server
+  occupying all eight cards — stop it first; PIDs are printed; `FORCE=1` overrides).
+- Headless (display Disabled on all GPUs) → `CUDAGRAPH_MAXBS=8` is safe here.
+- 1 TB host RAM; the old systemd `MemoryMax` cage is gone with foreground mode — `MAX_JOBS=4`
+  still caps the cicc JIT storm, which is the real protection.
+- 32 GB/card knobs to walk if OOM at load or first graph capture: `MEMFRAC` 0.90 → 0.88/0.85
+  (best profile) or 0.92 → lower (single-session); `MAMBA_CACHE` (default 6×MAXREQ — keep the
+  6× ratio or spec graphs silently cap concurrency); `CUDAGRAPH_MAXBS` ≥ MAXREQ.
+- 5090 deltas vs the 6000 card: no NVLink (PCIe P2P only) → expect a TP8 comm tax; ~1/3 the
+  per-card HBM; 128 CPU cores (JIT caps `MAX_JOBS=4` remain mandatory — unbounded cicc × 128
+  cores is a RAM storm, even with 1 TB).
+
 ## Result (stable `serve_best.sh` build, warm)
 | | jpezzulli | ours (temp 0.6) | ours (greedy = lossless) |
 |---|---|---|---|
@@ -22,19 +61,22 @@ Correctness gates (all PASS, final build): greedy arithmetic/fact · 3× needles
 cached-prefix identical · 5-8× GSM-style @0.6 · code spot · French. VRAM peak 95.5 GB.
 
 ## Run — two profiles (same unit `qwen-sglang`, same endpoint; one command to switch)
+
+*(historical, RTX PRO 6000 box: systemd unit; the testcomp2/5090 deployment runs in the foreground — Ctrl+C to stop, see the deployment section above)*
 ```bash
 ./serve_best.sh      # DEFAULT: interactive + agents. 4-way, fp8 stack on,
                      # ctx 262144 (native), KV pool ~572K tokens, C1 ~231 tok/s.
 ./serve_single.sh    # ONE HUGE SESSION: ctx 786432 (YaRN x3), KV pool ~827K tokens,
                      # C1 ~185 tok/s (fp8 dense copies traded for KV head-room).
-curl -s http://127.0.0.1:8001/health    # 200 when ready (~5 min)
+curl -s http://127.0.0.1:1025/health   # 200 when ready (~5 min)
 systemctl --user stop qwen-sglang       # stop
 ```
 The 786K profile is validated with needle retrieval at 653K-token depth (start/middle/end
 all pass); 653K prefill ~89 s cold, ~4 s on cached prefixes. ~827K tokens is the physical
 ceiling of the card (81.5 GB weights on 96 GB). An 8-way variant of the default profile
 (`MAXREQ=8 CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48`) measured 758 tok/s aggregate if ever needed.
-Endpoint **http://localhost:8001/v1**, model **`pennyroyal`** (OpenAI-compatible; thinking on by
+Endpoint **http://localhost:1025/v1**, models **`pennyroyal`** or **`glm-5.3-flash`** (aliases,
+patch 0008; first is canonical. OpenAI-compatible; thinking on by
 default → tokens in `delta.reasoning_content`). Or from the laptop: `omega --update` then
 `omega --serve qwen3.8-flash-next`.
 
