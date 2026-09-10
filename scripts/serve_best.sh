@@ -40,13 +40,16 @@ fi
 mkdir -p logs
 echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, 8-way). Ctrl+C to stop. Logging to logs/serve.log"
 
-export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.90}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
+export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.85}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
   KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=0 \
   GDN_MTP_CACHE_MODE=none \
   SGLANG_SM120_LOWM_FP8_WEIGHT=1 SGLANG_SM120_LM_HEAD_FP8=1 \
   CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48 CPU_OFFLOAD_GB=0 \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
+# MEMFRAC 0.85 (was 0.90): at 0.90 the KV pool preallocations left <100 MiB free and
+# decode-graph capture OOM'd on every card (hit 2026-09-10 23:50). 0.85 leaves ~1.5-2 GB
+# free per card for graph capture + draft graphs; KV pool drops ~2.06M -> ~1.8M tokens.
 
 trap 'true' INT   # wrapper survives Ctrl+C so the cleanup sweep below still runs
 set +e

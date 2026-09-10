@@ -36,14 +36,16 @@ ROPE="{\"text_config\":{\"rope_parameters\":{\"mrope_interleaved\":true,\"mrope_
 
 echo "Starting sglang in the foreground (single-session, TP=${TP:-8} EP=${EP_SIZE:-8}, ctx=$CTX YaRN x$FACTOR). Ctrl+C to stop."
 
-export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.92}" CTX="$CTX" MAXREQ="${MAXREQ:-2}" \
+export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.88}" CTX="$CTX" MAXREQ="${MAXREQ:-2}" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
   KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=0 \
   GDN_MTP_CACHE_MODE=none \
-  SGLANG_SM120_LOWM_FP8_WEIGHT=0 \
+  SGLANG_SM120_LOWM_FP8_WEIGHT=0 SGLANG_SM120_LM_HEAD_FP8=0 \
   CUDAGRAPH_MAXBS=2 MAMBA_CACHE=12 CPU_OFFLOAD_GB=0 \
-  ROPE_OVERRIDE="$ROPE" \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
+# MEMFRAC 0.88 (was 0.92): leave CUDA-graph capture headroom on 32 GB cards (the 0.92
+# value came from the 96 GB card). If capture still OOMs, drop to 0.86. KV pool still
+# ~1.9M tokens aggregate -> comfortably holds 2 x 786432.
 
 trap 'true' INT   # wrapper survives Ctrl+C so the cleanup sweep below still runs
 set +e

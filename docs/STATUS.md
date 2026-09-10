@@ -27,6 +27,18 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   (31040 rows/rank at TP8) → device-side `vectorized_gather_kernel` OOB assert during draft
   init (crashed 2026-09-10 22:59 after a fully clean TP8+EP8 model load + KV pool alloc of
   2,060,224 tokens). 0007 all-gathers the full head along the vocab dim first.
+- **`ninja` on PATH**: sglang's JIT kernel builder shells out to `ninja`; without the venv's
+  bin dir on PATH, CUDA-graph warmup dies with `FileNotFoundError: 'ninja'` (hit 2026-09-10
+  23:16). serve.sh now prepends `$REPO/.venv/bin`.
+- **Graph-capture headroom on 32 GB cards**: MEMFRAC 0.90 preallocates the KV pool so tight
+  that decode-graph capture OOM'd on every card (23:50 run: <100 MiB free, 128 MiB short).
+  Defaults now 0.85 (best) / 0.88 (single); if capture still OOMs, drop another notch.
+  KV pool cost: ~2.06M → ~1.8M tokens aggregate — irrelevant at 8-way/262144 ctx.
+- **Host RAM**: sglang does NOT need ~1 TB. Committed RAM is tens of GB (JIT compile capped
+  by MAX_JOBS=4 / FLASHINFER_NINJA_JOBS=4, PLE pinned ~1.3 GB, schedulers/tokenizers small);
+  the large "used" figure is Linux page cache over the 206 shard files — reclaimable, only
+  speeds up reloads. A 256 GB cap is fine; only cold/repeat weight loads get slower once
+  the shard cache is evicted.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
