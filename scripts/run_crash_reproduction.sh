@@ -101,6 +101,12 @@ fi
 if [[ "${TRACK_DUMP:-1}" != "0" ]]; then
   debug_env+=(SGLANG_DEBUG_TRACK_DUMP=1)
 fi
+if [[ "${NO_OVERLAP:-0}" = "1" ]]; then
+  # 0010g: single-threaded event loop -> with CUDA_LAUNCH_BLOCKING the abort
+  # frame IS the trapping launch. With overlap, the trap may fire on the
+  # concurrent target-verify stream while the draft thread sits at a sync.
+  debug_env+=(NO_OVERLAP=1)
+fi
 if [[ "${EAGER_DRAFT:-0}" = "1" ]]; then
   # 0010f: run the EAGLE draft steps eagerly instead of via the captured
   # decode graph. With DBG_LAUNCH_BLOCKING the IndexKernel assert then

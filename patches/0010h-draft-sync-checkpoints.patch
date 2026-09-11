@@ -1,0 +1,56 @@
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -129,6 +129,21 @@
+ logger = logging.getLogger(__name__)
+ 
+ 
++def _dbg_sync_checkpoint(tag: str) -> None:
++    """0010h: host-sync checkpoint for the eager-draft crash hunt.
++
++    Device-side assert traps abort the process at the next runtime sync before
++    python can raise. Logging the tag BEFORE the sync pins the trapping phase
++    to the last "[dbg-sync] checkpoint" line in the log (a trap shows the tag
++    without its "passed" line); a clean sync raises a full python traceback.
++    """
++    if os.environ.get("SGLANG_DEBUG_EAGER_DRAFT") != "1":
++        return
++    logger.warning("[dbg-sync] checkpoint %s", tag)
++    torch.cuda.synchronize()
++    logger.warning("[dbg-sync] passed %s", tag)
++
++
+ def _qsa_index_share_requested(hf_config) -> bool:
+     """--json-model-override-args writes top-level hf_config attributes, while
+     checkpoint configs carry the flag on the nested text_config; read both."""
+@@ -640,6 +655,7 @@
+                     self.draft_forward(forward_batch)
+                 )
+ 
++        _dbg_sync_checkpoint("draft: after draft_forward, before verify input build")
+         return build_eagle_verify_input(
+             batch,
+             draft_input,
+@@ -774,6 +790,7 @@
+                     logits_output = self.draft_runner.forward(
+                         forward_batch
+                     ).logits_output
++                _dbg_sync_checkpoint(f"draft_forward step {i}: after model forward")
+                 maybe_detect_nan(
+                     logits_output.next_token_logits, f"draft_forward step {i}"
+                 )
+@@ -809,6 +826,7 @@
+                     )
+                     topk_p, topk_index = fast_topk(probs, self.topk, dim=-1)
+                     forward_batch.positions.add_(1)
++                _dbg_sync_checkpoint(f"draft_forward step {i}: after topk")
+                 maybe_detect_oob(
+                     topk_index,
+                     0,
+@@ -818,6 +836,7 @@
+                 if self.hot_token_id is not None:
+                     topk_index = self.hot_token_id[topk_index]
+                 hidden_states = logits_output.hidden_states
++                _dbg_sync_checkpoint(f"draft_forward step {i}: after hot gather")
+ 
+         draft_probs = (
+             torch.stack(draft_probs_list, dim=1)

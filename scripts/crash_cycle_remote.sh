@@ -29,9 +29,11 @@ VLLM_TIMEOUT=$((90 * 60))   # seconds to wait for the completions 200 OK
 
 log() { echo "[cycle $(date +%H:%M:%S)] $*"; }
 
-# Debug phase (run 9): run the EAGLE draft steps eagerly (patch 0010f) so the
-# next IndexKernel assert surfaces at the exact python op with a full stack.
+# Debug phase (runs 9-10): run the EAGLE draft steps eagerly (patch 0010f) and
+# without the overlap scheduler (0010g) so the next device-assert abort surfaces
+# at the exact trapping launch with a full python frame.
 export EAGER_DRAFT=1
+export NO_OVERLAP=1
 
 # docker may need sudo depending on group membership
 if docker info >/dev/null 2>&1; then

@@ -167,6 +167,42 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   the exact python op with a full stack. Next run: `EAGER_DRAFT=1` cycle run → if the crash
   reproduces eagerly, the stack names the op; if 30 attempts stay clean, the bug is
   replay-metadata staleness (capture-specific) — a different instrumentation pass.
+- **Run 10 (20:24, exit 2, attempt 7 seq 5) — crash REPRODUCED eagerly (169k consume dumps
+  confirm eager mode)**; last dumped topk valid (15377 < 65536). BUT the abort was the CUDA
+  runtime's `abort()` on the device-assert trap (device asserts kill the process before any
+  python exception can print — faulthandler "Fatal Python error: Aborted"), main thread at
+  eagle_worker_v2.py:819 = the per-step `hot_token_id[topk_index]` gather launch. Since
+  CUDA_LAUNCH_BLOCKING was ON ([dbg] echo confirmed) and the gather's index was just
+  probed valid, the trap likely fired on the **overlap scheduler's concurrent stream**
+  (the target-verify path — completely unprobed) while the draft thread sat at its sync.
+  Verified clean: hot map values 0..248,076 < vocab 248,320 (embed-safe; real vocab is
+  248,320, not 152k), draft embed = target's full embedding. Eager reproduction also
+  exonerates capture/replay staleness — the bug is in the SHARED draft/verify path.
+  **0010g applied (wrapper + repro_crash.sh, no server patch)**: `NO_OVERLAP=1` →
+  `--disable-overlap-schedule`, so with CUDA_LAUNCH_BLOCKING the abort frame IS the
+  trapping launch. Cycle driver now defaults `EAGER_DRAFT=1 NO_OVERLAP=1`. Next run's
+  faulthandler main-thread frame names the op directly.
+- **Run 11 (post-0010g, exit 2, attempt 13, seq 1) — IDENTICAL frame with overlap
+  disabled** (`event_loop_normal` confirmed; `--disable-overlap-schedule` in the launch
+  line): eagle_worker_v2.py:819 in draft_forward → :640 draft → :1315. Overlap exonerated
+  too. Conclusion: `CUDA_LAUNCH_BLOCKING` cannot pin the trapper — **Triton and other
+  driver-API launches (cudaGraphLaunch, cuLaunchKernel) bypass CUDA launch blocking**, so
+  an async kernel (triton fused rope/kv-store, topk1, MoE, or the target verify graph
+  replay) can trap while the CPU thread sits at the next blocked ATen launch (:819's
+  gather). Countermove **0010h applied** (helper + 4 sites in eagle_worker_v2.py, gated on
+  `SGLANG_DEBUG_EAGER_DRAFT=1`): `_dbg_sync_checkpoint` = log tag BEFORE
+  `torch.cuda.synchronize()` — sites: after model forward / after topk / after hot gather
+  (per step, :793/:829/:839) and before verify input build (:658). The last
+  "[dbg-sync] checkpoint" line without its "passed" line names the trapping phase; a clean
+  sync raises a full python traceback instead. Patch mirrored: `patches/0010h-...`.
+  Next run's log: read the tail of [dbg-sync] lines + the first missing "passed".
+- **Run 12 (21:31, exit 1) — startup death from 0010h's own sync during capture**: the
+  draft graph capture at init runs draft_forward (eager via 0010f), the checkpoint's
+  `torch.cuda.synchronize()` inside an active capture → "operation not permitted when
+  stream is capturing" → "Capture cuda graph failed" → all ranks abort. Same class as
+  runs 7/8. **0010i applied**: `_dbg_sync_checkpoint` now also returns early when
+  `get_is_capture_mode()` (same predicate 0010e proved). Serving-phase checkpoints
+  unaffected. Patch mirrored: `patches/0010i-...`.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

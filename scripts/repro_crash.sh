@@ -36,7 +36,11 @@ health() { curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; }
 start_server() {
   echo "[repro] patch check, then starting sglang via serve_best.sh (the validated crash profile: TP8+EP8, MEMFRAC 0.80, fp8 stack) ..."
   bash "$ROOT/scripts/apply_patches.sh" || true
-  ( cd "$ROOT" && SKIP_WARMUP=1 bash scripts/serve_best.sh ) > "$ROOT/logs/repro_server.log" 2>&1 &
+  extra_args=()
+  if [[ "${NO_OVERLAP:-0}" = "1" ]]; then
+    extra_args+=(--disable-overlap-schedule)
+  fi
+  ( cd "$ROOT" && SKIP_WARMUP=1 bash scripts/serve_best.sh "${extra_args[@]}" ) > "$ROOT/logs/repro_server.log" 2>&1 &
   srv=$!
   echo "[repro] server pid $srv; waiting for /health (up to ~35 min; first start = load + autotune + graph capture) ..."
   local i
