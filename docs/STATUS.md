@@ -203,6 +203,21 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   runs 7/8. **0010i applied**: `_dbg_sync_checkpoint` now also returns early when
   `get_is_capture_mode()` (same predicate 0010e proved). Serving-phase checkpoints
   unaffected. Patch mirrored: `patches/0010i-...`.
+- **Run 13 (22:01, exit 2, attempt 12, seq 1) — THE OOB VALUE OBSERVED**: all sync
+  checkpoints passed through the whole draft; the crash came right after the
+  **decode-extend** dumps printed `build=decode-extend bs=1 min=max=196625` —
+  **196,625 > 65,536 (hot map size)** but < 248,320 (vocab) — a full-vocab value sitting
+  in the chain `topk_index` slot that the next draft round gathers `hot_token_id` by.
+  E1 in run 6 was real after all — the writer is the **decode-extend chain fill**
+  (`ret_topk_index = argmax(draft_logits_output.next_token_logits[select_index])`,
+  eagle_worker_v2.py ~:1126-1160) — but argmax over the 0007-sliced 65536-wide head
+  cannot return 196,625, so the decode-extend logits were full-vocab (a head leak) OR the
+  value came via the DSA IndexShare seed (`index_share_for_mtp_iteration` /
+  `dsa_topk_indices` — indexer top-k are full-vocab indices). **0010j applied**: the
+  decode-extend dump now also prints `logits_w` (the logits width) and the dsa_seed
+  min/max — the next run discriminates the two theories. Also this run had NO assert
+  message and NO python exception in the log — abort swallowed them (flush ordering);
+  the dump values are the reliable signal.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
