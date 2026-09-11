@@ -218,6 +218,46 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   min/max — the next run discriminates the two theories. Also this run had NO assert
   message and NO python exception in the log — abort swallowed them (flush ordering);
   the dump values are the reliable signal.
+- **Run 14 (22:14, exit 2, attempt 2, seq 2 — fast repro) — `logits_w=248320`: the
+  decode-extend logits are FULL-VOCAB.** The decode path's per-step OOB probe uses
+  `logits.shape[-1]` as the bound (= 248,320 if the draft logits are full-vocab) →
+  the probe never fires while `hot_token_id` (65,536 rows) traps — explains the silent
+  probes in runs 9-13 AND E1 firing in run 6 (E1's bound was hardcoded 65,536). Root
+  cause shape: the draft model's head restriction (0007 slice at init) does NOT reach
+  the actual GEMM — the draft's topk = argmax over FULL-vocab logits = full-vocab token
+  ids written into the chain, gathered by `hot_token_id` (65,536 rows) → trap whenever
+  a token id ≥ 65,536 lands in the chain (small ids pass silently as garbage tokens —
+  explains intermittency + long-session crashes). **0010k applied**: dumps the draft
+  `lm_head.weight.shape` + hot-map size at decode-extend and the decode-path logits
+   width per round — discriminates "replacement never applied" (weight 248,320) vs
+   "replacement applied but GEMM bypasses it" (weight 65,536 + logits_w 248,320).
+- **Run 15 (22:26-22:31, exit 2, attempt 3, seq 2) — ROOT CAUSE NAILED**: draft
+  `lm_head.weight.shape=(65536, 2560)` (the 0007 slice IS applied) BUT `logits_w=248320`
+  in BOTH the decode and decode-extend paths. Mechanism: after 0007, every rank holds the
+  FULL 65,536-row sliced head, but the logits processor still all-gathers per-rank
+  logits (vocab-parallel contract: each rank should hold 1/8 of the hot vocab) →
+  gathered = 8 × 65,536 = 524,288 rows → trimmed to vocab_size 248,320 → the draft's
+  argmax returns `[block_offset + hot_rank]` (196,625 = 196,608 + 17 — hot rank 17 from
+  block 3!) → these are NOT hot ranks → `hot_token_id[topk_index]` traps whenever the
+  value ≥ 65,536; block-0 values (19, 13) pass silently as garbage tokens — explains
+  intermittency, long-session crashes, silent probes (their bound = the inflated logits
+  width), and E1 firing (hardcoded 65,536 bound). Also the FIRST crash ever seen
+  (pre-0007, `vectorized_gather_kernel` OOB) was upstream sglang's own TP>1 +
+  speculative-token-map head-indexing bug — 0007 fixed that but broke the gather
+  contract. **0011 applied (the fix)**: after slicing, re-shard the hot head — each
+  rank keeps rows `[rank*8192 : (rank+1)*8192]` — so the all-gather reconstructs
+  exactly the 65,536 hot ranks. Patch mirrored: `patches/0011-hot-head-reshard.patch`.
+  Expected post-fix signature: `logits_w=65536`, decode-extend min/max < 65,536,
+  no crash. Debug instrumentation (0010-0010k) stays in place to verify the fix.
+- **Run 16 (22:43-23:51+, exit 0) — FIX VALIDATED**: all 30 attempts passed WITHOUT a
+  crash. Post-fix signature exactly as predicted: per-rank head shape `(8192, 2560)`,
+  `logits_w=65536` in both paths, decode-extend values valid hot ranks (198 < 65,536),
+  no asserts/aborts. The crash is RESOLVED by **0011-hot-head-reshard.patch**.
+  State: patches 0007 + 0011 must stay (0007 slices the hot head, 0011 re-shards it);
+  0010-0010k debug instrumentation is env-gated and inert in daily serving (only the
+  cycle's debug phase sets those env vars) — candidate for removal after a soak period.
+  Caveat: 30 attempts is good but not exhaustive evidence; if a crash ever recurs,
+  re-check the [topk-dump]/[dbg-sync] signature first.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

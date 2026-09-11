@@ -1,0 +1,26 @@
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -357,6 +357,23 @@
+                     head = head.clone()
+                 self.hot_token_id = self.hot_token_id.to(head.device)
+                 head.data = head.data[self.hot_token_id]
++                # [sm120 patch 0011] The sliced head must keep the vocab-parallel
++                # contract: the logits processor all-gathers per-rank logits
++                # assuming each rank holds 1/tp of the (hot) vocab. With the full
++                # 65536-row slice on every rank, the gather produced
++                # tp * 65536 rows (trimmed to vocab_size), so the draft's argmax
++                # returned [block_offset + hot_rank] values that are NOT hot
++                # ranks -> hot_token_id[topk_index] went out of bounds (device
++                # assert). Re-shard: each rank keeps only its own hot rows, so
++                # the gather reconstructs exactly the 65536 hot ranks.
++                tp = get_tp_group()
++                if tp.world_size > 1:
++                    per = head.data.shape[0] // tp.world_size
++                    assert (
++                        per * tp.world_size == head.data.shape[0]
++                    ), f"hot head rows {head.data.shape[0]} not divisible by tp {tp.world_size}"
++                    lo = tp.rank * per
++                    head.data = head.data[lo : lo + per]
+ 
+             # Share the embedding and lm_head
+             self.draft_runner.model.set_embed_and_head(embed, head)
