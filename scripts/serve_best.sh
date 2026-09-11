@@ -47,12 +47,35 @@ export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${C
   SGLANG_SM120_LOWM_FP8_WEIGHT=1 SGLANG_SM120_LM_HEAD_FP8=1 \
   CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48 CPU_OFFLOAD_GB=0 \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
-# MEMFRAC 0.85 (was 0.90): at 0.90 the KV pool preallocations left <100 MiB free and
-# decode-graph capture OOM'd on every card (hit 2026-09-10 23:50). 0.85 leaves ~1.5-2 GB
-# free per card for graph capture + draft graphs; KV pool drops ~2.06M -> ~1.8M tokens.
+# MEMFRAC journey: 0.90 -> capture OOM (<100 MiB free, 2026-09-10 23:50); 0.85 -> text clean
+# (245,109-token prompts at bs 1/2/4/8, user-validated) but on-GPU image preprocessing in the
+# tokenizer process OOM'd with <100 MiB free; user-validated default now 0.80. With the pil
+# image backend (CPU-only preprocessing, default in serve.sh) 0.85 likely works again — try it
+# if you want the bigger KV pool.
 
 trap 'true' INT   # wrapper survives Ctrl+C so the cleanup sweep below still runs
 set +e
+
+# Post-ready warmup (background subshell, dies with this wrapper): polls /health, then
+# sends one tiny chat request. This forces the lazy Triton pool kernels (alloc_extend,
+# assign_req_to_token_pool) and first-token JIT paths to load INSIDE the startup window —
+# otherwise they device-load on the user's first real request ("Triton kernel ...
+# device-loaded after serving started" warnings) and also pollute the first bench.
+{
+  for _ in $(seq 1 720); do
+    curl -sf "http://127.0.0.1:${PORT:-1025}/health" >/dev/null 2>&1 && break
+    kill -0 $PPID 2>/dev/null || exit 0
+    sleep 5
+  done
+  curl -sf "http://127.0.0.1:${PORT:-1025}/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
+    >/dev/null 2>&1 \
+    && echo "[warmup] post-ready warmup request OK (pool kernels + JIT loaded)" \
+    || echo "[warmup] warmup request failed (server still starting or stopped)"
+} &
+warmup_pid=$!
+
 bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log
 rc=${PIPESTATUS[0]}
 set -e

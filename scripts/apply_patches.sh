@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the eight sm120 patches to ./sglang-official (branch qwen4-main-squashed).
+# Apply the nine sm120 patches to ./sglang-official (branch qwen4-main-squashed).
 # IDEMPOTENT: each patch is skipped if already applied (or conflicting) — safe to re-run
 # after every `git pull` of this repo. Editable install => no rebuild needed afterwards.
 #
@@ -20,6 +20,8 @@
 #         (required for TP>1 + SPEC_TOKEN_MAP; without it the draft lm_head gather
 #          indexes the vocab-parallel slice globally -> device-side assert)
 #   0008  Multi-alias --served-model-name ("a,b" -> /v1/models lists both)  [git apply]
+#   0009  Tolerant tool schemas: drop malformed "required" before validation [git apply]
+#         (some client frameworks emit "required": {} -> 400 "invalid 'parameters'")
 set -euo pipefail
 # Locate the repo root (script normally lives at <repo>/scripts/). If run in an exotic way
 # (stdin/`bash -s`), fall back to cwd when it looks like the repo root, else fail loudly.
@@ -63,6 +65,7 @@ apply_one 0005-sm120-fp8-weight-only.patch am
 apply_one 0006-sm120-fp8-hc-lmhead.patch am
 apply_one 0007-eagle-frspec-vocab-parallel-head-gather.patch apply
 apply_one 0008-served-model-aliases.patch apply
+apply_one 0009-tolerant-tool-schema-required.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then

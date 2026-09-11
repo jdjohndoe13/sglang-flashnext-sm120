@@ -1,0 +1,40 @@
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 5599347024..672c94ff95 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -853,6 +853,27 @@ class OpenAIServingChat(OpenAIServingBase):
+             if len(names) != len(set(names)):
+                 return "Tool names must be unique across request and message tools."
+ 
++        # [sm120 patch 0009] Some client frameworks emit malformed tool schemas
++        # (e.g. "required": {} instead of an array). Draft202012Validator
++        # .check_schema rejects them with a 400 even though OpenAI-compatible
++        # servers tolerate them. Drop any 'required' that is not an array of
++        # strings ({} / null / a bare string) before validation.
++        def _sm120_drop_invalid_required(schema, _depth=0):
++            if _depth > 24:
++                return
++            if isinstance(schema, dict):
++                req = schema.get("required")
++                if req is not None and not (
++                    isinstance(req, list)
++                    and all(isinstance(r, str) for r in req)
++                ):
++                    schema.pop("required", None)
++                for v in list(schema.values()):
++                    _sm120_drop_invalid_required(v, _depth + 1)
++            elif isinstance(schema, list):
++                for item in schema:
++                    _sm120_drop_invalid_required(item, _depth + 1)
++
+         # Validate tool definitions
+         for i, tool in enumerate(effective_tools):
+             if tool.function.parameters is None:
+@@ -863,6 +884,7 @@ class OpenAIServingChat(OpenAIServingBase):
+                 # guards against hand-crafted cyclic schemas so the request gets
+                 # a 400 instead of crashing into a 500.
+                 normalize_json_schema_types(tool.function.parameters)
++                _sm120_drop_invalid_required(tool.function.parameters)
+                 Draft202012Validator.check_schema(tool.function.parameters)
+             except SchemaError as e:
+                 return f"Tool {i} function has invalid 'parameters' schema: {str(e)}"

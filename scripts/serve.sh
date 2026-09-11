@@ -75,7 +75,8 @@ export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-4}"
 
 args=(
   serve --model-path "$TARGET_MODEL" --load-format safetensors
-  --served-model-name "$SERVED_NAME" --host 0.0.0.0 --port "$PORT" --tp "$TP"
+  --served-model-name "$SERVED_NAME" --host 0.0.0.0 --port "$PORT" --tp "$TP" \
+  --image-processor-backend "${MM_IMG_BACKEND:-pil}"
   --dtype bfloat16 --quantization modelopt_fp4 --kv-cache-dtype "$KVDTYPE"
   --mem-fraction-static "$MEMFRAC" --context-length "$CTX"
   --page-size 64 --max-running-requests "$MAXREQ" --chunked-prefill-size 4096

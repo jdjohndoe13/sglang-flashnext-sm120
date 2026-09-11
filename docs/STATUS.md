@@ -39,6 +39,17 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   the large "used" figure is Linux page cache over the 206 shard files — reclaimable, only
   speeds up reloads. A 256 GB cap is fine; only cold/repeat weight loads get slower once
   the shard cache is evicted.
+- **WORKING (2026-09-11 00:09)**: server up on :1025 with MEMFRAC 0.80; user validated
+  245,109-token prompts at 1/2/4/8 parallel; both aliases serve (requests address the model
+  as `glm-5.3-flash` or `pennyroyal`). Late Triton pool-kernel loads (alloc_extend,
+  assign_req_to_token_pool) are benign — diagnostic warnings from `triton_load_watch`;
+  serve_best.sh now fires a post-ready warmup request so they load inside the startup window.
+- **Image requests OOM'd on GPU 0** (00:14 run, MEMFRAC 0.85): the transformers *fast* image
+  processor runs torch ops on GPU 0 inside the tokenizer process — on a card with <100 MiB
+  free it dies. Fix: `--image-processor-backend pil` (CPU-only preprocessing; default in
+  serve.sh). With pil, MEMFRAC 0.85 likely works again.
+- **Tool-call requests 400**: `"required": {}` (malformed tool schema from some agent
+  frameworks) fails jsonschema validation → patch 0009 drops malformed `required` instead.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
