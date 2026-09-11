@@ -53,8 +53,19 @@ stop_server() {
   sleep 3
   pkill -9 -f "sglang.launch_server" 2>/dev/null || true
   pkill -9 -f "$ROOT/sglang-official/.venv/bin/sglang" 2>/dev/null || true
+  # Safety net for orphaned scheduler/detokenizer children (proctitle "sglang::...");
+  # cannot match vLLM ("VLLM::...").
+  sleep 2
+  pkill -9 -f "sglang::" 2>/dev/null || true
 }
 trap 'stop_server' EXIT
+
+# Pre-flight: this script must control the server itself (the debug env lives in serve.sh).
+if health; then
+  echo "ERROR: something already answers /health on port $PORT."
+  echo "Stop the running server first — it was not started by this script and may lack the debug instrumentation."
+  exit 3
+fi
 
 for ((att = 1; att <= attempts; att++)); do
   echo "[repro] ===== attempt $att/$attempts ====="
@@ -70,7 +81,7 @@ for ((att = 1; att <= attempts; att++)); do
     echo "[repro] POST $f (seq $n) ..."
     code=$(curl -sS -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
       -H 'Content-Type: application/json' --data-binary "@$f" \
-      --max-time 1800 -o "$out" -w '%{http_code}' 2>"$LOGDIR/curl.att${att}.seq${n}.err" || true)
+      --max-time 3600 -o "$out" -w '%{http_code}' 2>"$LOGDIR/curl.att${att}.seq${n}.err" || true)
     if [[ "${code:-000}" == "200" ]]; then
       echo "[repro]   -> 200 OK, $(wc -c <"$out") bytes -> $out"
     else
