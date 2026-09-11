@@ -146,6 +146,27 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   build=prefill / build=decode-extend / filter / merge dumps framing the writer, or, if all
   are sane while E1 fires, the corruption is inside the draft graph runner's buffer copy
   (eagle_draft_cuda_graph_runner.py:562/570).
+- **Run 9 (19:46, exit 2, attempt 10 seq 2) — the ORIGINAL IndexKernel assert is back, all
+  probes SILENT**: crash inside `eagle_draft_cuda_graph_runner.py:659 _replay_graph` (draft
+  decode graph replay; faulthandler stack: :659 → eagle_worker_v2.py:626 draft → :1313
+  forward_batch_generation → run_batch → event_loop_overlap). Stock `IndexKernel.cu:111`
+  "index out of bounds" (single-element, runs 1–3 signature), NOT a named probe — so every
+  probed input was valid at its probe point: all 230,920 `[topk-dump]` values in range
+  (0 negative, 0 >65535 across 10 attempts), `set_kv_buffer (MHA)` stock probe
+  (memory_pool.py:2469, bound size+page_size) silent, E1–E5 silent. The crashing op is an
+  UNPROBED torch advanced-index op inside the captured draft graph. Pool state healthy at
+  crash (token usage 0.05, mamba 0.08, cuda graph True, bs=1, ~150 tok/s, request ~80.3k
+  tokens = the 289k-char chain request; NOT KV pressure). Coredumps (5× ~541 MB) rejected by
+  cuda-gdb 13.1 ("file format not recognized") — route parked for good.
+  Candidate unprobed ops in the captured draft path: embed gather (`embed_tokens(input_ids)`),
+  per-step `out_cache_loc`/`positions` consumers, page-table two-level gathers (the triton
+  `generate_draft_decode_kv_indices` is Triton, not IndexKernel — not the crasher).
+  **Patch 0010f applied (`patches/0010f-eager-draft-debug-override.patch`) + wrapper knob
+  `EAGER_DRAFT=1`**: env `SGLANG_DEBUG_EAGER_DRAFT=1` skips the draft decode graph and runs
+  `draft_forward` eagerly — with DBG_LAUNCH_BLOCKING the identical assert then surfaces at
+  the exact python op with a full stack. Next run: `EAGER_DRAFT=1` cycle run → if the crash
+  reproduces eagerly, the stack names the op; if 30 attempts stay clean, the bug is
+  replay-metadata staleness (capture-specific) — a different instrumentation pass.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

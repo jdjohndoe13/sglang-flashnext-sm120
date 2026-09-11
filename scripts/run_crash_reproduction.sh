@@ -101,6 +101,13 @@ fi
 if [[ "${TRACK_DUMP:-1}" != "0" ]]; then
   debug_env+=(SGLANG_DEBUG_TRACK_DUMP=1)
 fi
+if [[ "${EAGER_DRAFT:-0}" = "1" ]]; then
+  # 0010f: run the EAGLE draft steps eagerly instead of via the captured
+  # decode graph. With DBG_LAUNCH_BLOCKING the IndexKernel assert then
+  # surfaces at the exact python op (full stack) instead of inside
+  # cudaGraphLaunch. Slower decode; keep 30 attempts or Ctrl+C.
+  debug_env+=(SGLANG_DEBUG_EAGER_DRAFT=1)
+fi
 
 echo "=== crash reproduction: env ${debug_env[*]} bash scripts/repro_crash.sh $* ==="
 rc=0

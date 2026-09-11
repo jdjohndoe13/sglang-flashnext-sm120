@@ -29,6 +29,10 @@ VLLM_TIMEOUT=$((90 * 60))   # seconds to wait for the completions 200 OK
 
 log() { echo "[cycle $(date +%H:%M:%S)] $*"; }
 
+# Debug phase (run 9): run the EAGLE draft steps eagerly (patch 0010f) so the
+# next IndexKernel assert surfaces at the exact python op with a full stack.
+export EAGER_DRAFT=1
+
 # docker may need sudo depending on group membership
 if docker info >/dev/null 2>&1; then
   DOCKER=(docker)
