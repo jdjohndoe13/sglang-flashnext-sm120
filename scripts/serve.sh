@@ -125,6 +125,23 @@ SPEC_TOKEN_MAP="${SPEC_TOKEN_MAP:-$ROOT/hot_tokens_64k.pt}"
 # factor 2.0 = 524288; the 800K single-session profile uses 3.0 = 786432).
 [[ -n "${ROPE_OVERRIDE:-}" ]] && args+=( --json-model-override-args "$ROPE_OVERRIDE" )
 
+# ---- debug instrumentation (all off by default; used by scripts/repro_crash.sh) ----
+# DBG_LAUNCH_BLOCKING=1: CUDA launches run synchronously -> the next device-side assert
+# reports the TRUE kernel/op in the python traceback instead of an async report at the
+# next stream sync (costs ~10-30% throughput while on).
+if [[ "${DBG_LAUNCH_BLOCKING:-0}" == "1" ]]; then
+  export CUDA_LAUNCH_BLOCKING=1 TORCH_SHOW_CPP_STACKTRACES=1
+  echo "[dbg] CUDA_LAUNCH_BLOCKING=1 + TORCH_SHOW_CPP_STACKTRACES=1 (slow, exact assert location)"
+fi
+# DBG_CRASH_DUMP=1: on crash, dump CUDA coredumps + the requests from the last 5 min
+# (server_args wires CUDA_COREDUMP_FILE under the folder when --crash-dump-folder is set).
+if [[ "${DBG_CRASH_DUMP:-0}" == "1" ]]; then
+  export CUDA_ENABLE_USER_TRIGGERED_COREDUMP=1
+  mkdir -p "$ROOT/logs/crashdump"
+  args+=( --crash-dump-folder "$ROOT/logs/crashdump" )
+  echo "[dbg] --crash-dump-folder $ROOT/logs/crashdump + CUDA user-triggered coredumps"
+fi
+
 # Extra CLI args (e.g. from `omega --serve <key> [args...]`) are appended last; argparse last-wins
 # so they can override anything above (--port, --served-model-name, --context-length, ...).
 echo "sglang ${args[*]} $*"
