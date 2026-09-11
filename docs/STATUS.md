@@ -120,6 +120,32 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   (compiles): gated `[topk-dump]` min/max dumps at consume, build=prefill, build=decode-extend,
   filter, merge=takeover, merge=cat → next run names the exact writer. topk=1 explains the
   single-element IndexKernel in runs 1–3 (the hot gather at eagle_worker_v2.py:674).
+- **Crash-cycle automation (2026-09-11 19:11) — works end to end**: `scripts/crash_cycle.bat`
+  (local) → `ssh testcomp2` → `scripts/crash_cycle_remote.sh` (deployed to the machine repo's
+  `scripts/`): stops/kills every container of the vllm image (`ancestor=` filter only —
+  grafana/prometheus/open-webui untouched; docker needs no sudo), runs
+  `run_crash_reproduction.sh`, saves its exit code to `logs/last_repro_exit_code.txt`,
+  restarts `/mnt/data/shared/models/vllm-glm-5.3-flash-nvfp4.sh` under nohup (that script is a
+  foreground `docker run --rm -p 1025:1025`, log at `logs/vllm_start_<stamp>.log`), polls
+  `:1025/v1/completions` with a "Hi" prompt (model auto-detected from /v1/models) until 200 OK
+  (90 min timeout → exit 3), exits → ssh disconnects → the .bat notifies the opencode session
+  (`ses_f72b307f3ffeQZQnrN91yNllIw`). Verified: syntax + image filter (1 match) + one full live
+  cycle incl. vllm restart to 200 OK.
+- **Runs 7/8 (19:19, ×2 cycle runs) — startup death, OUR instrumentation bug**: server died
+  during draft graph capture: `[topk-dump] consume ...` at eagle_worker_v2.py:674 calls
+  `.item()` → `cudaErrorStreamCaptureUnsupported` → `capture_end` fails → all ranks abort at
+  attempt 1 (repro exit code 1 = "died during startup"). The consume dump is the only dump
+  inside the captured `draft_forward` region; all other dump sites (build A/B after
+  `execute()`, filter/merge, track-dump) run outside capture and are safe; probes
+  (`maybe_detect_oob` = assert_async kernel) are capture-safe by construction (proven: run 6
+  captured fine with E1 present). `get_mamba_indices` probe audited — kernel only, safe.
+  **Patch 0010e applied + `patches/0010e-guard-topk-dump-capture.patch`**: consume dump now
+  skipped when `get_is_capture_mode()`. Note for next crash: decode runs as graph REPLAY —
+  python in `draft_forward` (incl. the consume dump) executes only at capture (zeros) or
+  eager decode, NOT at replay; provenance for a replay-path E1 fire therefore comes from
+  build=prefill / build=decode-extend / filter / merge dumps framing the writer, or, if all
+  are sane while E1 fires, the corruption is inside the draft graph runner's buffer copy
+  (eagle_draft_cuda_graph_runner.py:562/570).
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
