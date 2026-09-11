@@ -13,6 +13,9 @@
 #      DBG_LAUNCH_BLOCKING=1 (exact kernel/op on the next device-side assert)
 #      DBG_CRASH_DUMP=1      (CUDA coredumps + last-5-min requests into logs/crashdump/)
 #      and tees everything to logs/repro.log.
+# Expected runtime with the default 14-request chain: roughly 30-60 min total
+# (server start ~2 min warm; each attempt replays 13 turns + the crash request
+# with CUDA_LAUNCH_BLOCKING on, so decode is 2-3x slower than usual).
 # Artifacts when finished (either way):
 #   logs/repro.log           console mirror
 #   logs/repro_server.log    full sglang server output (the exact assert lives here)
@@ -54,8 +57,22 @@ fi
 
 # --- 3) run the reproducer ----------------------------------------------------
 if [[ $# -eq 0 ]]; then
-  # Default: the last successful agent turn (KV warmup) + the crashing request, 3 attempts.
-  set -- requests-and-responses/1789088173658.req.json \
+  # Default: the last 13 real agent turns before the crash (bounded .repro.json copies,
+  # max_tokens=1500, rebuilds the deep radix/mamba history of the live session in order)
+  # + the pristine crashing request, 3 attempts.
+  set -- requests-and-responses/1789088087042.repro.json \
+         requests-and-responses/1789088091899.repro.json \
+         requests-and-responses/1789088098428.repro.json \
+         requests-and-responses/1789088114760.repro.json \
+         requests-and-responses/1789088118489.repro.json \
+         requests-and-responses/1789088121925.repro.json \
+         requests-and-responses/1789088130175.repro.json \
+         requests-and-responses/1789088136536.repro.json \
+         requests-and-responses/1789088141649.repro.json \
+         requests-and-responses/1789088159364.repro.json \
+         requests-and-responses/1789088170289.repro.json \
+         requests-and-responses/1789088172341.repro.json \
+         requests-and-responses/1789088173658.repro.json \
          requests-and-responses/1789088177485.req.json 3
 fi
 

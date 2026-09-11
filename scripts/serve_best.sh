@@ -61,6 +61,8 @@ set +e
 # assign_req_to_token_pool) and first-token JIT paths to load INSIDE the startup window —
 # otherwise they device-load on the user's first real request ("Triton kernel ...
 # device-loaded after serving started" warnings) and also pollute the first bench.
+# SKIP_WARMUP=1 disables it (used by scripts/repro_crash.sh for deterministic replays).
+if [[ "${SKIP_WARMUP:-0}" != "1" ]]; then
 {
   for _ in $(seq 1 720); do
     curl -sf "http://127.0.0.1:${PORT:-1025}/health" >/dev/null 2>&1 && break
@@ -84,6 +86,7 @@ set +e
     || echo "[warmup] long-prefill warmup request failed"
 } &
 warmup_pid=$!
+fi
 
 bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log
 rc=${PIPESTATUS[0]}

@@ -50,6 +50,17 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   serve.sh). With pil, MEMFRAC 0.85 likely works again.
 - **Tool-call requests 400**: `"required": {}` (malformed tool schema from some agent
   frameworks) fails jsonschema validation → patch 0009 drops malformed `required` instead.
+- **Server-killing device assert (2026-09-11 00:56, under investigation)**: one long agent
+  request (~86k tokens, temp 0.6) aborted all 8 ranks ~25 decode tokens in with a
+  single-element `IndexKernel` OOB gather (async-reported at `copy_done.synchronize()`).
+  Ruled out: OOM, KV pressure, tool schemas, padded-vocab sampling, draft gathers.
+  Top suspect: mamba `extra_buffer` state-restore chains from a deep radix tree.
+  Repro: `scripts/run_crash_reproduction.sh` replays the last 13 real turns before the
+  crash (bounded `.repro.json` copies, max_tokens 1500) + the pristine crash request,
+  ×3 attempts, with `DBG_LAUNCH_BLOCKING=1` (exact kernel on next assert) and
+  `DBG_CRASH_DUMP=1` (CUDA coredumps into `logs/crashdump/`). A 2-request replay ×3
+  attempts was clean (~2k decode tokens) → content alone doesn't trigger it;
+  the 13-turn chain recreates the live session's accumulated tree history.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

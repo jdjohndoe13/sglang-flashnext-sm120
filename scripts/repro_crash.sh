@@ -13,8 +13,10 @@
 # - If a crash kills the server, the script reports "SERVER DIED" and stops — the
 #   evidence is in logs/repro_server.log (exact kernel stack with DBG_LAUNCH_BLOCKING=1)
 #   and logs/crashdump/ (with DBG_CRASH_DUMP=1).
-# - The server is started via scripts/serve.sh (so all TP8/EP8 defaults match the crash
-#   conditions) and restarted automatically if it is not running when an attempt begins.
+# - The server is started via scripts/serve_best.sh — the validated crash profile
+#   (TP8+EP8, MEMFRAC 0.80, fp8 stack) — and restarted automatically if it is not
+#   running when an attempt begins. Warmup requests are skipped (SKIP_WARMUP=1) so
+#   the replay is deterministic.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-1025}"
@@ -32,9 +34,9 @@ for f in "${reqs[@]}"; do [[ -f "$f" ]] || { echo "missing request file: $f"; ex
 health() { curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; }
 
 start_server() {
-  echo "[repro] patch check, then starting sglang (defaults = the crash conditions) ..."
+  echo "[repro] patch check, then starting sglang via serve_best.sh (the validated crash profile: TP8+EP8, MEMFRAC 0.80, fp8 stack) ..."
   bash "$ROOT/scripts/apply_patches.sh" || true
-  ( cd "$ROOT" && bash scripts/serve.sh ) > "$ROOT/logs/repro_server.log" 2>&1 &
+  ( cd "$ROOT" && SKIP_WARMUP=1 bash scripts/serve_best.sh ) > "$ROOT/logs/repro_server.log" 2>&1 &
   srv=$!
   echo "[repro] server pid $srv; waiting for /health (up to ~35 min; first start = load + autotune + graph capture) ..."
   local i
