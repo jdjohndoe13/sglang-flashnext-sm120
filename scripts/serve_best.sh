@@ -40,7 +40,7 @@ fi
 mkdir -p logs
 echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, 8-way). Ctrl+C to stop. Logging to logs/serve.log"
 
-export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.85}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
+export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
   KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=0 \
   GDN_MTP_CACHE_MODE=none \
