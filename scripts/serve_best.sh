@@ -71,8 +71,17 @@ set +e
     -H 'Content-Type: application/json' \
     -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
     >/dev/null 2>&1 \
-    && echo "[warmup] post-ready warmup request OK (pool kernels + JIT loaded)" \
+    && echo "[warmup] short warmup request OK (pool kernels + JIT loaded)" \
     || echo "[warmup] warmup request failed (server still starting or stopped)"
+  # Second request: long prompt (~40-50k tokens) so the long-context model kernels
+  # (_sparse_gqa_chunk_prefill, _sparse_gqa_prefill, _fused_slot_copy, ...) device-load
+  # now too — those only trigger on long prefill, not on the tiny request above.
+  longfiller="$(tr -dc 'a-z0-9 ' < /dev/urandom 2>/dev/null | head -c 200000)"
+  printf '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"%s"}],"max_tokens":1}' "$longfiller" \
+    | curl -sf "http://127.0.0.1:${PORT:-1025}/v1/chat/completions" \
+        -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 \
+    && echo "[warmup] long-prefill warmup request OK (sparse GQA + model kernels loaded)" \
+    || echo "[warmup] long-prefill warmup request failed"
 } &
 warmup_pid=$!
 
