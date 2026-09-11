@@ -61,6 +61,22 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   `DBG_CRASH_DUMP=1` (CUDA coredumps into `logs/crashdump/`). A 2-request replay ×3
   attempts was clean (~2k decode tokens) → content alone doesn't trigger it;
   the 13-turn chain recreates the live session's accumulated tree history.
+- **CRASH REPRODUCED (2026-09-11 16:53, 13-turn chain, attempt 2)**: died mid-decode of
+  attempt-2 seq 4 (`1789088114760.repro.json`, rid f9e1c10e — the SAME file decoded fine
+  in attempt 1) ~8 decode steps after a 64-new-token / 80,128-cached prefill →
+  tree-state dependent, not request content. Evidence: faulthandler C-stack on all 8
+  ranks pins the fault inside the **EAGLE draft CUDA-graph replay**
+  (`eagle_draft_cuda_graph_runner.py:279` → `eagle_worker_v2.py:625 draft`), not the
+  target model / mamba restore. Artifacts: 7× `core.cuda.*` (~533 MB each) +
+  `crash_dump_*.pkl` in `logs/crashdump/testcomp/`; py-spy dumps failed (ptrace_scope —
+  set `sudo sysctl -w kernel.yama.ptrace_scope=0` first for next time). In-graph torch
+  IndexKernel candidates: `hot_token_id[topk_index]` gathers (hot map = 65,536 entries;
+  all topk_index sources are argmax/topk over the 65,536-wide draft logits — structurally
+  in-bounds), `select_top_k_tokens` gathers (safe at topk=1), plus UNPROBED suspects:
+  Flash-Next sparse-indexer (dsa) seed top-k gathers, PLE-offloaded table gathers, GDN
+  state-slot gathers. Next: rerun with `SGLANG_ENABLE_ASYNC_ASSERT=1` (in-graph probes
+  cover the topk chain + NaN/Inf); if no probe fires, add targeted probes (patch 0010)
+  for state slots / indexer seeds / input_ids.
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
