@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: sm120-repro <dev@localhost>
+Date: Fri, 11 Sep 2026 18:20:00 +0000
+Subject: [PATCH] sm120: async OOB probes on mamba track slots and PLE state indices
+
+Diagnostic patch 0010: adds maybe_detect_oob probes (all no-ops unless
+SGLANG_ENABLE_ASYNC_ASSERT=1) along the suspect in-graph index chain of the
+draft-replay crash:
+  - eagle draft initial topk_index vs the 65536-row hot token map
+  - req_index_to_mamba_ping_pong_track_buffer_mapping values and the
+    gathered per-batch track slots (source of the conv_state /
+    set_ngram_context in-graph scatters)
+  - NGramPool.set_context slot ids (all modes)
+  - qwen4_exp PLE short-conv state_indices and decode track_indices
+
+---
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 3ff2a29..6160bba 100644
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -13,6 +13,8 @@ from sglang.srt.runtime_context import (
+     mamba_extra_buffer_enabled,
+     mamba_extra_buffer_lazy_enabled,
+ )
++from sglang.srt.utils.async_probe import maybe_detect_oob
++
+ from sglang.srt.utils.common import (
+     Range,
+     ceil_align,
+@@ -1902,6 +1904,19 @@ def set_mamba_track_indices_from_reqs(
+     batch.mamba_track_indices = (
+         torch.gather(all_buffers, 1, idx).squeeze(1).to(torch.int64)
+     )
++    mamba_size = req_to_token_pool.mamba_pool.size
++    maybe_detect_oob(
++        all_buffers,
++        0,
++        mamba_size,
++        "req_index_to_mamba_ping_pong_track_buffer_mapping values",
++    )
++    maybe_detect_oob(
++        batch.mamba_track_indices,
++        0,
++        mamba_size,
++        "batch.mamba_track_indices (gathered track slots)",
++    )
+ 
+ 
+ def release_req(
+diff --git a/python/sglang/srt/mem_cache/memory_pool.py b/python/sglang/srt/mem_cache/memory_pool.py
+index 4b5b8da..47fc6a3 100644
+--- a/python/sglang/srt/mem_cache/memory_pool.py
++++ b/python/sglang/srt/mem_cache/memory_pool.py
+@@ -1490,6 +1490,11 @@ class HybridReqToTokenPool(ReqToTokenPool):
+     def set_ngram_context(
+         self, ngram_indices: torch.Tensor, context: torch.Tensor
+     ) -> None:
++        ngram_size = getattr(self.ngram_pool, "size", None)
++        if ngram_size is not None:
++            maybe_detect_oob(
++                ngram_indices, 0, ngram_size, "NGramPool.set_context indices"
++            )
+         self.ngram_pool.set_context(ngram_indices, context)
+ 
+     def set_ngram_intermediate_context(self, context: torch.Tensor) -> None:
+diff --git a/python/sglang/srt/models/qwen4_exp.py b/python/sglang/srt/models/qwen4_exp.py
+index 7c7694a..1254d64 100644
+--- a/python/sglang/srt/models/qwen4_exp.py
++++ b/python/sglang/srt/models/qwen4_exp.py
+@@ -71,6 +71,7 @@ from sglang.srt.models.qwen4_exp_ple_table import (
+ from sglang.srt.runtime_context import get_parallel
+ from sglang.srt.utils import logger
+ from sglang.srt.utils import logger
++from sglang.srt.utils.async_probe import maybe_detect_oob
+ 
+ # Decode/verify-sized batches only: at prefill sizes both chains are compute
+ # bound and serializing them on one stream is faster than contending.
+@@ -1013,6 +1014,12 @@ class Qwen4ExpPLELayer(nn.Module):
+             return x
+         pool = get_req_to_token_pool()
+         conv_state = pool.short_conv_layer_cache(self.layer_id)
++        maybe_detect_oob(
++            batch.state_indices,
++            0,
++            conv_state.shape[0],
++            f"ple short_conv L{self.layer_id} state_indices",
++        )
+ 
+         if batch.use_decode_fast_path:
+             # Preserve the native depthwise-convolution and SiLU implementations;
+@@ -1050,6 +1057,12 @@ class Qwen4ExpPLELayer(nn.Module):
+             track = _ple_track_targets(forward_batch, batch)
+             if track is not None:
+                 track_indices, _ = track
++                maybe_detect_oob(
++                    track_indices,
++                    0,
++                    conv_state.shape[0],
++                    f"ple short_conv L{self.layer_id} track_indices (decode)",
++                )
+                 conv_state[track_indices] = next_state.to(dtype=conv_state.dtype)
+             return F.silu(conv_output)
+ 
+diff --git a/python/sglang/srt/speculative/eagle_worker_v2.py b/python/sglang/srt/speculative/eagle_worker_v2.py
+index 07a467c..2169fc7 100644
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -665,6 +665,12 @@ class EagleDraftWorker(EagleDraftWorkerBase):
+         maybe_detect_nan(topk_p, "draft_forward: NaN in initial topk_p from spec_info")
+ 
+         if self.hot_token_id is not None:
++            maybe_detect_oob(
++                topk_index,
++                0,
++                self.hot_token_id.shape[0],
++                "eagle draft initial topk_index vs hot map (spec_info origin)",
++            )
+             topk_index = self.hot_token_id[topk_index]
+ 
+         out_cache_loc = per_step_draft_out_cache_loc(
+
+-- 
+2.34.1

@@ -61,22 +61,65 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   `DBG_CRASH_DUMP=1` (CUDA coredumps into `logs/crashdump/`). A 2-request replay ×3
   attempts was clean (~2k decode tokens) → content alone doesn't trigger it;
   the 13-turn chain recreates the live session's accumulated tree history.
-- **CRASH REPRODUCED (2026-09-11 16:53, 13-turn chain, attempt 2)**: died mid-decode of
-  attempt-2 seq 4 (`1789088114760.repro.json`, rid f9e1c10e — the SAME file decoded fine
-  in attempt 1) ~8 decode steps after a 64-new-token / 80,128-cached prefill →
-  tree-state dependent, not request content. Evidence: faulthandler C-stack on all 8
-  ranks pins the fault inside the **EAGLE draft CUDA-graph replay**
-  (`eagle_draft_cuda_graph_runner.py:279` → `eagle_worker_v2.py:625 draft`), not the
-  target model / mamba restore. Artifacts: 7× `core.cuda.*` (~533 MB each) +
-  `crash_dump_*.pkl` in `logs/crashdump/testcomp/`; py-spy dumps failed (ptrace_scope —
-  set `sudo sysctl -w kernel.yama.ptrace_scope=0` first for next time). In-graph torch
-  IndexKernel candidates: `hot_token_id[topk_index]` gathers (hot map = 65,536 entries;
-  all topk_index sources are argmax/topk over the 65,536-wide draft logits — structurally
-  in-bounds), `select_top_k_tokens` gathers (safe at topk=1), plus UNPROBED suspects:
-  Flash-Next sparse-indexer (dsa) seed top-k gathers, PLE-offloaded table gathers, GDN
-  state-slot gathers. Next: rerun with `SGLANG_ENABLE_ASYNC_ASSERT=1` (in-graph probes
-  cover the topk chain + NaN/Inf); if no probe fires, add targeted probes (patch 0010)
-  for state slots / indexer seeds / input_ids.
+- **CRASH REPRODUCED ×3 (16:53 attempt 2 / 17:31 attempt 7 / 17:44 attempt 2-seq 5, 13-turn chain)**:
+  all inside the **EAGLE draft CUDA-graph replay** (`eagle_draft_cuda_graph_runner.py:279` →
+  `eagle_worker_v2.py:625 draft`), not the target model / mamba restore. Chain seq 4
+  (`1789088114760`, 80,128-cached prefill) crashed twice; the probe run moved to seq 5 →
+  tree-state dependent, not request content. Concurrency ruled out (opencode request never
+  reached the server during run 2). sglang's built-in in-graph probes (per-step `topk_index`
+  bounds + NaN/Inf on draft logits) were ACTIVE and SILENT in run 3 → the per-step topk chain
+  is clean. In-graph suspects narrowed to torch index/gather ops in the draft model forward
+  whose FIRST element can be OOB: PLE short-conv `conv_state[state_indices/track_indices]`
+  gathers+scatters (`qwen4_exp.py _short_conv`), `NGramPool.set_context` slot ids, the
+  ping-pong track-slot source (`schedule_batch.set_mamba_track_indices_from_reqs` —
+  `req_index_to_mamba_ping_pong_track_buffer_mapping` values; lazy mode stores **-1** for
+  unallocated slots; track slots are what `cache_{un,}finished_req` hand the radix tree —
+  matching the tree-state dependence; track-interval 64 → seq 4 crosses its first boundary
+  ~64 decode steps after the big cache-hit restore), eagle draft **initial** `hot_token_id[topk_index]`
+  (the only hot gather without a probe), and the PLE offloaded-embedding prefetch gather.
+- **Patch 0010 (`patches/0010-sm120-track-probes.patch`) applied on testcomp2**: async
+  `maybe_detect_oob` probes (no-ops unless `SGLANG_ENABLE_ASYNC_ASSERT=1`) at: eagle draft
+  initial topk_index vs hot map; the ping-pong mapping table + gathered track slots
+  (schedule_batch); `NGramPool.set_context` ids; `_short_conv` state_indices + decode
+  track_indices. Probes are graph-capturable (`torch._assert_async`) and fire DURING replay
+  with a named message. Live tree compiles; note: patch file's qwen4_exp.py hunk context
+  assumes the working-tree state (0001b/0004/0005 patch files are stale vs HEAD — pre-existing
+  drift, untouched).
+- **Run 5 (18:19–18:20, with patch 0010b dump) — probe fired but it was OUR OWN FALSE ALARM**:
+  `[track-dump] GEOM mamba_size=48 ngram_size=48 req_pool_rows=(9,2)` + first-ever
+  `BAD rows (i,row)=[(0, [48, 47])] rpis=[8] next_idx=[1] bufs=[[48, 47]]`, then our E2 assert
+  `index >= 48 ... mapping values` killed all ranks mid-decode of seq 3 (resp truncated to
+  1,767 bytes). GROUND TRUTH established: MambaPool (`max_slots = size + 1`),
+  ShortConvPool (`conv_state = (layers, size+1, ...)`), NGramPool (`context = (size+1, ...)`)
+  ALL allocate **size+1 = 49 rows with row 0 = shared dummy**, and `MambaSlotAllocator.clear()`
+  hands out ids 1..48 (`arange(1, size+1)`) — so **id 48 is legitimate** and probe bounds must
+  be `size + 1`. Launch flags confirmed from crash pkl: no unified memory, `--max-mamba-cache-size 48`,
+  `--max-running-requests 8` (req pool 9 rows), NEXTN topk=1 steps=3 draft=4,
+  `--mamba-track-interval 64`, `--mamba-radix-cache-strategy extra_buffer`, page 64.
+  The ORIGINAL IndexKernel assert message from runs 1–3 is unrecoverable (server logs overwritten;
+  crash pkls hold only server_args/config/requests/launch_command).
+  **Patch 0010c applied (compiles)**: E2 (mapping values + gathered track slots) and E3
+  (NGramPool.set_context) bounds corrected to `size + 1`; dump gate now flags `<0 or >size`;
+  BAD dump enriched with per-req `mamba_pool_idx` (working slot) + `rid`; NEW probe in
+  `get_mamba_indices` (working mamba slots vs `size+1`, covers the GDN state path in-graph).
+  E4/E1 bounds were already correct (`conv_state.shape[0]` / `hot_token_id.shape[0]`).
+  NEXT: rerun → probes stay silent on legit 48s; either the original IndexKernel assert
+  surfaces with its bound value (names the real tensor) or a corrected probe fires.
+- **Run 6 (with 0010c) — ROOT CAUSE NAMED**: crash at attempt 5, seq 3; E1 fired on ALL ranks:
+  `index >= 65536 (out of range): eagle draft initial topk_index vs hot map (spec_info origin)`.
+  The draft's INITIAL `spec_info.topk_index` (carried from the previous round) contains a
+  **full-vocab token id (≥ hot size 65536, < vocab ~152k)** — the stock probes were blind
+  because they bound by `vocab_size` while the consumer gathers `hot_token_id[topk_index]`
+  (hot map 64k from `--speculative-token-map`). Draft head IS gathered to 65536 rows
+  (patch 0007: `head.data = head.data[hot_token_id]` after TP all-gather) → builds A/B
+  (`_draft_extend_for_prefill` / `_draft_extend_for_decode`, topk over 65536-dim logits)
+  mathematically cannot emit ≥ 65536. Draft graph runner zero + copies spec_info into
+  static buffer (no staleness). Remaining writers: eagle_info filter/merge (subsets/cats)
+  — so the leak is either a yet-unread path (e.g. verify-output/bonus-token flow, overlap
+  future spec_info) or one of these under an unexpected state. Patch 0010d applied
+  (compiles): gated `[topk-dump]` min/max dumps at consume, build=prefill, build=decode-extend,
+  filter, merge=takeover, merge=cat → next run names the exact writer. topk=1 explains the
+  single-element IndexKernel in runs 1–3 (the hot gather at eagle_worker_v2.py:674).
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

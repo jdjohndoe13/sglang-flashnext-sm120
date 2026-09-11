@@ -143,6 +143,12 @@ hf download RadixArk/Qwen3.8-Flash-Next-NVFP4 --local-dir Qwen3.8-Flash-Next-NVF
 # note: hf_xet can stall on the largest shards; scripts/serve.sh's docs and
 # docs/STATUS.md describe the curl fallback that resumes reliably.
 
+Prerequisites: rust / cargo installed. For example, via this script:
+
+```shell
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 # Pin the exact commit everything here was verified against (single commit, no history):
 git init sglang-official && cd sglang-official
 git remote add origin https://github.com/sgl-project/sglang
