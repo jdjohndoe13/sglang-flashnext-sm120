@@ -5,7 +5,7 @@
 #   bash scripts/run_crash_reproduction.sh <req1.json> [req2.json ...] [attempts]   # override
 #
 # Everything needed is inside; no extra env or flags required. It does, in order:
-#   1. Refuses to run while the GPUs are busy (vLLM etc.) — FORCE=1 overrides.
+#   1. Refuses to run while the GPUs are busy (any other LLM server) — FORCE=1 overrides.
 #   2. Relaxes kernel.yama.ptrace_scope so the sglang watchdog's py-spy dumps work on a
 #      crash (skipped if already 0; if sudo fails, continues with a warning — it only
 #      affects the quality of crash stack dumps, not the reproduction itself).
@@ -43,7 +43,7 @@ if [[ "${FORCE:-0}" != "1" ]]; then
   if [[ -n "$busy" ]]; then
     echo "ERROR: GPUs are busy — stop the other server(s) first, then re-run (FORCE=1 to override):"
     echo "$busy"
-    echo "Hint: stop the vLLM TP8 server the way you normally start it (e.g. its tmux session / start script),"
+    echo "Hint: stop the occupying sglang server the way you normally start it (e.g. its tmux session / serve_best.sh),"
     echo "      wait ~10 s, then re-run this command."
     exit 4
   fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the nine sm120 patches to ./sglang-official (branch qwen4-main-squashed).
+# Apply the ten sm120 patches to ./sglang-official (branch qwen4-main-squashed).
 # IDEMPOTENT: each patch is skipped if already applied (or conflicting) — safe to re-run
 # after every `git pull` of this repo. Editable install => no rebuild needed afterwards.
 #
@@ -19,6 +19,10 @@
 #   0007  FR-Spec: vocab-parallel-safe token-map head     [git apply, uncommitted]
 #         (required for TP>1 + SPEC_TOKEN_MAP; without it the draft lm_head gather
 #          indexes the vocab-parallel slice globally -> device-side assert)
+#   0011  Re-shard the hot-token-sliced draft lm_head to 1/tp per rank [git apply]
+#         (after 0007 every rank held the full 65,536-row slice; the vocab-parallel
+#          logits all-gather then concatenated tp copies and the draft's argmax
+#          returned non-hot-rank values -> hot_token_id[topk_index] device assert)
 #   0008  Multi-alias --served-model-name ("a,b" -> /v1/models lists both)  [git apply]
 #   0009  Tolerant tool schemas: drop malformed "required" before validation [git apply]
 #         (some client frameworks emit "required": {} -> 400 "invalid 'parameters'")

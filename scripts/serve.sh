@@ -12,10 +12,10 @@ SGLANG="${SGLANG:-$REPO/.venv/bin/sglang}"
 TARGET_MODEL="${TARGET_MODEL:-/mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4}"
 CACHE_BASE="${CACHE_BASE:-$ROOT/cache}"
 PORT="${PORT:-1025}"                # user-requested low-port; anything in 1024-65535 works
-SERVED_NAME="${SERVED_NAME:-pennyroyal,glm-5.3-flash}"
-# ^ comma-separated names: patch 0008 lists ALL of them on /v1/models and accepts any of
-# them by name; the first is canonical (used in spans/metrics). requests may address the
-# model as "pennyroyal" or "glm-5.3-flash" without touching other tools' configs.
+SERVED_NAME="${SERVED_NAME:-qwen-3.8-flash-next}"
+# ^ patch 0008 also accepts comma-separated aliases: all of them are listed on /v1/models
+# and accepted by name; the first is canonical (used in spans/metrics). Requests address the
+# model as "qwen-3.8-flash-next".
 [[ -x "$SGLANG" ]] || { echo "ERROR: sglang launcher not found at $SGLANG — set REPO=/path/to/sglang-checkout (with .venv) or SGLANG=/path/to/launcher"; exit 1; }
 
 # ---- tunable knobs (safe defaults) ----

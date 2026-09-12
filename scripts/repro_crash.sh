@@ -60,7 +60,7 @@ stop_server() {
   pkill -9 -f "sglang.launch_server" 2>/dev/null || true
   pkill -9 -f "$ROOT/sglang-official/.venv/bin/sglang" 2>/dev/null || true
   # Safety net for orphaned scheduler/detokenizer children (proctitle "sglang::...");
-  # cannot match vLLM ("VLLM::...").
+  # intentionally narrow so only sglang processes are matched.
   sleep 2
   pkill -9 -f "sglang::" 2>/dev/null || true
 }

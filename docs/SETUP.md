@@ -1,9 +1,8 @@
 # SETUP.md — fresh-install guide (Ubuntu 26.04)
 
 Rebuild the whole deployment on a freshly installed Ubuntu 26.04 box with 8× RTX 5090:
-the **vLLM GLM-5.3-Flash daily server** (Docker, port 1025) and the **sglang
-Qwen3.8-Flash-Next server** (host venv, ten sm120 patches, port 1025 — only one can hold
-the port/cards at a time), plus the crash-investigation cycle.
+the **sglang Qwen3.8-Flash-Next server** (host venv, ten sm120 patches, port 1025),
+plus the crash-investigation cycle.
 
 Companion docs: `README.md` (what/why + benchmark results), `docs/STATUS.md` (ops +
 crash investigation), `docs/PERF_CEILING.md` (analysis + dead-ends),
@@ -13,17 +12,14 @@ crash investigation), `docs/PERF_CEILING.md` (analysis + dead-ends),
 
 | service | engine | model | how | port |
 |---|---|---|---|---|
-| daily server | vLLM (custom sm120 image) | `RedHatAI/GLM-5.3-Flash-NVFP4` | docker, foreground | 1025 |
-| sglang server | sglang `qwen4-main-squashed` + 10 patches | `RadixArk/Qwen3.8-Flash-Next-NVFP4` | host venv, foreground | 1025 |
+| LLM server | sglang `qwen4-main-squashed` + 10 patches | `RadixArk/Qwen3.8-Flash-Next-NVFP4` | host venv, foreground | 1025 |
 | monitoring | grafana / prometheus / open-webui / gpu-temp-monitor | — | docker (optional) | various |
-
-The two LLM servers share port 1025 and all 8 GPUs — stop one before starting the other.
 
 ## 1. Host prerequisites
 
 Verified versions from the working machine (`testcomp2`): NVIDIA driver **590.48.01**,
-CUDA toolkit **13.1.115** (`/usr/local/cuda`), Docker **29.1.3**, gcc-13, python 3.12,
-rust/cargo, `uv`.
+CUDA toolkit **13.1.115** (`/usr/local/cuda`), Docker **29.1.3** (optional — only for the
+monitoring stack), gcc-13, python 3.12, rust/cargo, `uv`.
 
 ```bash
 # NVIDIA driver (590+ for Blackwell sm120). On a headless GPU server prefer the
@@ -46,20 +42,19 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # uv (used by scripts/do_build.sh):
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Docker + NVIDIA container toolkit (for the vLLM server):
-curl -fsSL https://get.docker.com | sh
-sudo apt install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
-docker run --rm --gpus all nvidia/cuda:13.1.1-base-ubuntu24.04 nvidia-smi   # sanity
-
 # python 3.12 (sglang venv):
 sudo apt install -y python3.12 python3.12-venv
+
+# OPTIONAL — docker + NVIDIA container toolkit (only for the monitoring stack):
+# curl -fsSL https://get.docker.com | sh
+# sudo apt install -y nvidia-container-toolkit
+# sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 ```
 
 ## 2. Directory layout (data disk)
 
-One big nvme mount for everything (`/mnt/data` on the working machine, 3.2 TB; ~1 TB
-needed: models ~200 GB + caches + build artifacts).
+One big nvme mount for everything (`/mnt/data` on the working machine, 3.2 TB; ~500 GB
+needed: model ~135 GB + caches + build artifacts).
 
 ```bash
 sudo mkdir -p /mnt/data /mnt/huggingface
@@ -74,10 +69,7 @@ mkdir -p /mnt/data/shared/models /mnt/data/huggingface
 | path | what |
 |---|---|
 | `/mnt/data/shared/models/qwen3.8-flash-next-nvfp4-sglang` | this repo (scripts/patches/docs + `sglang-official/` checkout + `cache/` + `logs/`) |
-| `/mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4` | sglang model checkpoint (~135 GB) |
-| `/mnt/huggingface/RedHatAI/GLM-5.3-Flash-NVFP4` | vLLM model checkpoint |
-| `/mnt/data/shared/models/vllm-glm-5.3-flash-nvfp4.sh` | vLLM daily-server launcher |
-| `/mnt/data/shared/models/vllm-glm-5.3-flash-nvfp4-modelopt.py` | modelopt.py overlay mounted read-only into the vLLM container (**required** — copy it from the old machine / your backup; it is not part of this repo) |
+| `/mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4` | model checkpoint (~135 GB) |
 
 ## 3. Get this repo
 
@@ -98,45 +90,16 @@ The repo carries: `patches/` (ten sm120 patches), `scripts/` (`serve.sh`,
 `python scripts/make_hot_tokens.py <model_dir> <corpus_glob>... -o hot_tokens_64k.pt`
 (all first 32K BPE ids + frequent tokens of a local corpus + specials, padded to 65,536).
 
-## 4. Model checkpoints
+## 4. Model checkpoint
 
 ```bash
-# sglang model (~135 GB; the ~50 GB PLE n-gram table is served from host RAM):
+# model (~135 GB; the ~50 GB PLE n-gram table is served from host RAM):
 hf download RadixArk/Qwen3.8-Flash-Next-NVFP4 --local-dir /mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4
 # NOTE: hf_xet can stall on the largest shards — the curl fallback that resumes
 # reliably is described in docs/STATUS.md.
-
-# vLLM daily-server model:
-hf download RedHatAI/GLM-5.3-Flash-NVFP4 --local-dir /mnt/huggingface/RedHatAI/GLM-5.3-Flash-NVFP4
-# IMPORTANT: use RedHatAI (compressed-tensors). LibertAIDAI/GLM-5.3-Flash-NVFP4
-# (modelopt) emits corrupted tokens on sm120 — vllm-project/vllm#54150.
 ```
 
-## 5. vLLM GLM-5.3-Flash daily server (Docker)
-
-```bash
-# image: the sm120 overlay with the rope-free sparse-MLA + kpool fixes
-# (upstream vLLM cannot run GLM-5.3-Flash on sm120; vllm#53963/#54150, PR #53969):
-docker pull cstechdev/vllm:glm53-flash-nope-sm120-cu130-20260826-r1
-
-# launcher + its required modelopt.py overlay (copy both from your backup of
-# the old machine's /mnt/data/shared/models/):
-cp vllm-glm-5.3-flash-nvfp4.sh vllm-glm-5.3-flash-nvfp4-modelopt.py /mnt/data/shared/models/
-chmod +x /mnt/data/shared/models/vllm-glm-5.3-flash-nvfp4.sh
-
-/mnt/data/shared/models/vllm-glm-5.3-flash-nvfp4.sh     # foreground; Ctrl+C stops it
-curl -s http://127.0.0.1:1025/v1/models                 # -> glm-5.3-flash
-```
-
-The launcher: `--tp 8`, `--kv-cache-dtype fp8`, `--gpu-memory-utilization 0.945`,
-`--block-size 256`, `--max-model-len 200000`, `--max-num-seqs 2`, model-name
-`glm-5.3-flash`, port 1025, and mounts the modelopt overlay + Triton/DeepGEMM JIT caches
-(`vllm-moet-cache/` — warm up by re-running once; first start compiles).
-
-Optional monitoring stack (grafana/prometheus/open-webui/gpu-temp-monitor) — copy its
-compose setup from the old machine if wanted; not required for serving.
-
-## 6. sglang Qwen3.8-Flash-Next server (host venv, ten patches)
+## 5. sglang Qwen3.8-Flash-Next server (host venv, ten patches)
 
 ```bash
 cd /mnt/data/shared/models/qwen3.8-flash-next-nvfp4-sglang
@@ -175,12 +138,13 @@ Defaults that matter on this hardware (all knobbed in `scripts/serve.sh`):
 safe), `--image-processor-backend pil` (the fast image processor OOMs the scheduler card),
 `.venv/bin` prepended to PATH (sglang's JIT builder needs the venv's ninja).
 
-The launchers refuse to start while GPUs hold >4 GB (the vLLM server occupies all eight
-cards — stop it first; `FORCE=1` overrides). Use tmux/screen to survive disconnects.
+The launchers refuse to start while GPUs hold >4 GB (anything else occupying the cards
+blocks startup — stop it first; `FORCE=1` overrides). Use tmux/screen to survive
+disconnects.
 
-## 7. Crash-investigation cycle (optional, triggered from Windows)
+## 6. Crash-investigation cycle (optional, triggered from Windows)
 
-Reproduces the (now-fixed) crash on demand, restores the daily server afterwards:
+Reproduces the (now-fixed) crash on demand, restores the server afterwards:
 
 ```
 scripts\crash_cycle.bat            (Windows: edit HOST / REMOTE_SCRIPT / SESSION inside)
@@ -197,13 +161,13 @@ scripts\crash_cycle.bat            (Windows: edit HOST / REMOTE_SCRIPT / SESSION
 - Requires an `opencode` CLI on the Windows box with the target session id
   (`SESSION=` in crash_cycle.bat).
 
-## 8. Validation checklist
+## 7. Validation checklist
 
 ```bash
 curl -s http://127.0.0.1:1025/health                       # 200
-curl -s http://127.0.0.1:1025/v1/models                    # lists pennyroyal + glm-5.3-flash
+curl -s http://127.0.0.1:1025/v1/models                    # lists qwen-3.8-flash-next
 curl -s http://127.0.0.1:1025/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"model":"pennyroyal","messages":[{"role":"user","content":"Hi"}]}'   # completes
+  -d '{"model":"qwen-3.8-flash-next","messages":[{"role":"user","content":"Hi"}]}'   # completes
 python scripts/bench_sglang.py                             # throughput sanity (see script args)
 ```
 
@@ -212,7 +176,7 @@ Also verify the 0011 fix signature when spec decoding is on: with
 min/max < 65,536; the per-rank draft head must be `(8192, 2560)`. Long agent sessions
 were the original crash trigger — soak one before trusting the install.
 
-## 9. Troubleshooting pointers
+## 8. Troubleshooting pointers
 
 - First-start OOM / graph capture: lower `MEMFRAC` (0.80 validated), keep
   `CUDAGRAPH_MAXBS` = MAXREQ, headless box assumed.

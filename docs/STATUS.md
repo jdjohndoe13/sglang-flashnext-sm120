@@ -40,8 +40,9 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   speeds up reloads. A 256 GB cap is fine; only cold/repeat weight loads get slower once
   the shard cache is evicted.
 - **WORKING (2026-09-11 00:09)**: server up on :1025 with MEMFRAC 0.80; user validated
-  245,109-token prompts at 1/2/4/8 parallel; both aliases serve (requests address the model
-  as `glm-5.3-flash` or `pennyroyal`). Late Triton pool-kernel loads (alloc_extend,
+  245,109-token prompts at 1/2/4/8 parallel; the served alias is addressed by name
+  (`qwen-3.8-flash-next`; patch 0008 also accepts comma-separated aliases). Late Triton
+  pool-kernel loads (alloc_extend,
   assign_req_to_token_pool) are benign — diagnostic warnings from `triton_load_watch`;
   serve_best.sh now fires a post-ready warmup request so they load inside the startup window.
 - **Image requests OOM'd on GPU 0** (00:14 run, MEMFRAC 0.85): the transformers *fast* image
@@ -267,14 +268,14 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   patches (0011 added after 0007). Debug patch files removed from both patches/ dirs
   (preserved in this repo's git history). Coredumps deleted (50.7 GB -> 95 MB of .pkl
   crash records kept). README.md + patches/README.md updated to the ten-patch series.
-  New: `docs/SETUP.md` — fresh-Ubuntu-26.04 rebuild guide (driver/CUDA/docker, both
-  model deployments, patch flow, crash cycle, validation checklist).
+  New: `docs/SETUP.md` — fresh-Ubuntu-26.04 rebuild guide (driver/CUDA, sglang build,
+  patch flow, crash cycle, validation checklist).
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.
   Run under tmux/screen to survive disconnects; no systemd unit, no auto-start.
-- Pre-flight: launchers abort while any GPU holds >4 GB (the box also runs a vLLM TP8 server
-  occupying all eight cards — stop it first; PIDs are printed; `FORCE=1` overrides).
+- Pre-flight: launchers abort while any GPU holds >4 GB (anything else occupying the
+  cards — stop it first; PIDs are printed; `FORCE=1` overrides).
 - Headless (display Disabled on all GPUs) → `CUDAGRAPH_MAXBS=8` is safe here.
 - 1 TB host RAM; the old systemd `MemoryMax` cage is gone with foreground mode — `MAX_JOBS=4`
   still caps the cicc JIT storm, which is the real protection.
@@ -317,8 +318,8 @@ The 786K profile is validated with needle retrieval at 653K-token depth (start/m
 all pass); 653K prefill ~89 s cold, ~4 s on cached prefixes. ~827K tokens is the physical
 ceiling of the card (81.5 GB weights on 96 GB). An 8-way variant of the default profile
 (`MAXREQ=8 CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48`) measured 758 tok/s aggregate if ever needed.
-Endpoint **http://localhost:1025/v1**, models **`pennyroyal`** or **`glm-5.3-flash`** (aliases,
-patch 0008; first is canonical. OpenAI-compatible; thinking on by
+Endpoint **http://localhost:1025/v1**, model **`qwen-3.8-flash-next`** (patch 0008 also
+accepts comma-separated aliases; first is canonical. OpenAI-compatible; thinking on by
 default → tokens in `delta.reasoning_content`). Or from the laptop: `omega --update` then
 `omega --serve qwen3.8-flash-next`.
 

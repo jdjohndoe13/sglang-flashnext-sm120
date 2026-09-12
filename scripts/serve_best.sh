@@ -17,10 +17,10 @@
 # For one huge session (786,432-token context): ./serve_single.sh
 # Needs the six sm120 patches in sglang-official:  bash scripts/apply_patches.sh
 #
-# Pre-flight: refuses to start while the GPUs are busy (this box also runs a vLLM TP8
-# server that occupies all 8 cards — stop it first; offending PIDs are printed).
-# Endpoint: http://localhost:1025/v1  (model names: pennyroyal or glm-5.3-flash — either
-# works; first is canonical). Thinking is ON by default
+# Pre-flight: refuses to start while the GPUs are busy (any other LLM server occupying
+# the cards — stop it first; offending PIDs are printed).
+# Endpoint: http://localhost:1025/v1  (model name: qwen-3.8-flash-next). Thinking is ON by
+# default
 # (tokens stream in delta.reasoning_content); pass chat_template_kwargs {"enable_thinking":
 # false} to disable.
 set -euo pipefail
@@ -71,7 +71,7 @@ if [[ "${SKIP_WARMUP:-0}" != "1" ]]; then
   done
   curl -sf "http://127.0.0.1:${PORT:-1025}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
+    -d '{"model":"qwen-3.8-flash-next","messages":[{"role":"user","content":"hi"}],"max_tokens":8}' \
     >/dev/null 2>&1 \
     && echo "[warmup] short warmup request OK (pool kernels + JIT loaded)" \
     || echo "[warmup] warmup request failed (server still starting or stopped)"
@@ -79,7 +79,7 @@ if [[ "${SKIP_WARMUP:-0}" != "1" ]]; then
   # (_sparse_gqa_chunk_prefill, _sparse_gqa_prefill, _fused_slot_copy, ...) device-load
   # now too — those only trigger on long prefill, not on the tiny request above.
   longfiller="$(tr -dc 'a-z0-9 ' < /dev/urandom 2>/dev/null | head -c 200000)"
-  printf '{"model":"glm-5.3-flash","messages":[{"role":"user","content":"%s"}],"max_tokens":1}' "$longfiller" \
+  printf '{"model":"qwen-3.8-flash-next","messages":[{"role":"user","content":"%s"}],"max_tokens":1}' "$longfiller" \
     | curl -sf "http://127.0.0.1:${PORT:-1025}/v1/chat/completions" \
         -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 \
     && echo "[warmup] long-prefill warmup request OK (sparse GQA + model kernels loaded)" \

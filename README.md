@@ -49,8 +49,8 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
   not hot ranks → `hot_token_id[topk_index]` device assert killing all ranks (the
   long-session crash). 0011 re-shards the hot head to 1/tp per rank. Required for
   TP8+EP8 + spec decoding with `--speculative-token-map`.
-- `0008` — comma-separated `--served-model-name "pennyroyal,glm-5.3-flash"`: both names listed
-  on `/v1/models` and accepted as model ids.
+- `0008` — comma-separated `--served-model-name`: all names listed
+  on `/v1/models` and accepted as model ids (this deployment serves `qwen-3.8-flash-next`).
 - `0009` — agent frameworks that emit malformed tool schemas (`"required": {}` instead of an
   array) used to get a 400; the patch drops the invalid field before validation.
 - `serve.sh` pins `--image-processor-backend pil`: the transformers *fast* image processor runs
@@ -67,8 +67,8 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
   actually needed; the big "used" figure during load is page cache of the 206 shard files
   (reclaimable), so a 256 GB cap only slows (cold) weight loads.
 
-The launchers refuse to start while GPUs are busy (the box also hosts a vLLM TP8 server that
-occupies all eight cards — stop it first; offending PIDs are printed, `FORCE=1` overrides).
+The launchers refuse to start while GPUs are busy (anything else occupying the cards —
+stop it first; offending PIDs are printed, `FORCE=1` overrides).
 The box is headless (display Disabled on all 8 GPUs), so graph capture limits can stay at 8.
 First start: model load + flashinfer autotune, ~20 min; `curl -s http://127.0.0.1:1025/health`
 → HTTP 200 when ready. 5090/TP8 performance numbers are TBD — TP1 figures below are the

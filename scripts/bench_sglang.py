@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse, json, os, statistics, subprocess, threading, time, urllib.request
 
 PORT = 8001
-MODEL = "pennyroyal"
+MODEL = "qwen-3.8-flash-next"
 OUT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "results_sglang.json")
 PROMPT = ("You are a coding agent. Implement a thread-safe LRU cache in C++20 with a "
           "templated API (get/put/size/capacity), an intrusive doubly-linked list plus "
