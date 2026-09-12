@@ -10,7 +10,7 @@ then goes ~35-45% past its published numbers.
 
 ## Deployment target: testcomp2 (8× RTX 5090, TP8)
 
-The 5090 is sm120 like the RTX PRO 6000, so all nine patches apply unchanged — but the
+The 5090 is sm120 like the RTX PRO 6000, so all ten patches apply unchanged — but the
 scripts are re-pointed and re-tuned for this box (32 GB/card, TP8, 1 TB host RAM):
 
 | | value |
@@ -23,7 +23,7 @@ scripts are re-pointed and re-tuned for this box (32 GB/card, TP8, 1 TB host RAM
 Run (after `git pull` on the machine):
 
 ```bash
-bash scripts/apply_patches.sh   # once per pull: nine sm120 patches into sglang-official (no rebuild)
+bash scripts/apply_patches.sh   # once per pull: ten sm120 patches into sglang-official (no rebuild)
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
 ./scripts/serve_single.sh       # one huge session: 786432 ctx (YaRN ×3), max KV pool
 ```
@@ -43,6 +43,12 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
 - `0007` — FR-Spec token map broke at TP>1: the draft lm_head gather indexed the
   vocab-parallel slice with global ids (device assert). The patch gathers the full head first.
   Required for TP8+EP8 + spec decoding.
+- `0011` — the sliced draft head then broke the vocab-parallel gather contract: every rank
+  held the full 65,536-row slice, the logits all-gather concatenated tp copies and trimmed
+  to vocab_size, so the draft's argmax returned `[block_offset + hot_rank]` values that are
+  not hot ranks → `hot_token_id[topk_index]` device assert killing all ranks (the
+  long-session crash). 0011 re-shards the hot head to 1/tp per rank. Required for
+  TP8+EP8 + spec decoding with `--speculative-token-map`.
 - `0008` — comma-separated `--served-model-name "pennyroyal,glm-5.3-flash"`: both names listed
   on `/v1/models` and accepted as model ids.
 - `0009` — agent frameworks that emit malformed tool schemas (`"required": {}` instead of an
@@ -100,7 +106,7 @@ Validated with greedy/needle/cached-prefix/GSM/code gates and 2.4M tokens of soa
 ## Contents
 
 ```
-patches/            nine patches against sgl-project/sglang @ qwen4-main-squashed (see patches/README.md)
+patches/            ten patches against sgl-project/sglang @ qwen4-main-squashed (see patches/README.md)
 scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_single.sh (786K ctx)
                     apply_patches.sh (idempotent, into sglang-official) · do_build.sh
                     bench_sglang.py · make_hot_tokens.py
@@ -111,7 +117,7 @@ hot_tokens_64k.pt   FR-Spec draft-vocab map
 
 ## The optimizations
 
-**Patches** (0001–0003 unblock sm120; 0004–0006 are the speed work, all env-gated; 0007–0009
+**Patches** (0001–0003 unblock sm120; 0004–0006 are the speed work, all env-gated; 0007–0011
 are the TP8/EP8 bring-up fixes, all applied by `scripts/apply_patches.sh`):
 1. `0001b` — RecoverSSM + WY output-only MTP verify on FlashInfer for sm120.
 2. `0002` — FP8-KV tile dequant for the QSA sparse prefill (2× KV capacity).
@@ -126,6 +132,10 @@ are the TP8/EP8 bring-up fixes, all applied by `scripts/apply_patches.sh`):
    gather (TP>1 device assert).
 8. `0008` — multi-alias `--served-model-name` (comma-separated, all listed on `/v1/models`).
 9. `0009` — tolerate malformed tool schemas (`"required": {}` → dropped, not 400).
+10. `0011` — re-shard the FR-Spec hot head to 1/tp per rank after the 0007 slice, so the
+    vocab-parallel logits all-gather reconstructs exactly the 65,536 hot ranks (fixes the
+    TP8+EP8 long-session crash: argmax values `[block_offset + hot_rank]` that are not hot
+    ranks → `hot_token_id[topk_index]` device assert).
 
 **Config levers** (in `scripts/serve.sh`, each documented inline with its measured ladder):
 - Relaxed MTP acceptance `0.3` (C1 179 → 231; exact at temp 0, set `1.0` for lossless sampling).
@@ -162,7 +172,7 @@ cd ..
 # git clone -b qwen4-main-squashed https://github.com/sgl-project/sglang sglang-official
 
 cd sglang-official && bash ../scripts/do_build.sh && cd ..
-bash scripts/apply_patches.sh       # 0001b+0002+0003+0007+0008+0009 via git apply; 0004-0006 via git am
+bash scripts/apply_patches.sh       # 0001b+0002+0003+0007+0008+0009+0011 via git apply; 0004-0006 via git am
 # point scripts/serve.sh at your paths (TARGET_MODEL, REPO), then:
 ./scripts/serve_best.sh             # OpenAI API on :1025, ~5 min to ready
 ```

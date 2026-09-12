@@ -258,6 +258,17 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   cycle's debug phase sets those env vars) — candidate for removal after a soak period.
   Caveat: 30 attempts is good but not exhaustive evidence; if a crash ever recurs,
   re-check the [topk-dump]/[dbg-sync] signature first.
+- **Post-fix housekeeping (2026-09-12)**: debug patches 0010-0010k stripped from BOTH
+  machines (sglang checkout restored per file: eagle_worker_v2.py = HEAD + 0007 + 0011,
+  memory_pool.py/schedule_batch.py = surgical probe removal keeping 0001b,
+  qwen4_exp.py/eagle_info.py restored — debug changes were working-tree only, never
+  committed). `patches/0011-hot-head-reshard.patch` regenerated CLEAN (applies on
+  HEAD+0007; verified in a throwaway worktree). `apply_patches.sh` now applies ten
+  patches (0011 added after 0007). Debug patch files removed from both patches/ dirs
+  (preserved in this repo's git history). Coredumps deleted (50.7 GB -> 95 MB of .pkl
+  crash records kept). README.md + patches/README.md updated to the ten-patch series.
+  New: `docs/SETUP.md` — fresh-Ubuntu-26.04 rebuild guide (driver/CUDA/docker, both
+  model deployments, patch flow, crash cycle, validation checklist).
 - `./scripts/serve_best.sh` (TP8+EP8, 8-way, fp8 KV + fp8 stack, ctx 262144) or
   `./scripts/serve_single.sh` (786K ctx). Both run in the **foreground** — Ctrl+C stops the
   server and a sweep reaps leftover SGLang GPU processes; logs also in `logs/serve.log`.

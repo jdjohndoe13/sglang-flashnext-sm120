@@ -1,6 +1,6 @@
 --- a/python/sglang/srt/speculative/eagle_worker_v2.py
 +++ b/python/sglang/srt/speculative/eagle_worker_v2.py
-@@ -357,6 +357,23 @@
+@@ -333,6 +333,23 @@
                      head = head.clone()
                  self.hot_token_id = self.hot_token_id.to(head.device)
                  head.data = head.data[self.hot_token_id]

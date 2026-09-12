@@ -64,6 +64,7 @@ apply_one 0004-sm120-lowm-triton-gemm.patch am
 apply_one 0005-sm120-fp8-weight-only.patch am
 apply_one 0006-sm120-fp8-hc-lmhead.patch am
 apply_one 0007-eagle-frspec-vocab-parallel-head-gather.patch apply
+apply_one 0011-hot-head-reshard.patch apply
 apply_one 0008-served-model-aliases.patch apply
 apply_one 0009-tolerant-tool-schema-required.patch apply
 
