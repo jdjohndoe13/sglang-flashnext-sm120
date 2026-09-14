@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# HiCache PROFILE: serve_best.sh + KV cache offloading to host RAM (128 GB total).
-# Qwen3.8-Flash-Next NVFP4, 8x RTX 5090 (sm120, 32 GB/card), TP8 + EP8.
+# HiCache PROFILE: serve_best.sh + KV cache offloading to host RAM (800 GB total).
+# Qwen3.8-Flash-Next NVFP4, 8x RTX 5090 (sm120, 32 GB/card), TP8 + EP8.  DAILY PROFILE.
 #
 # Identical to serve_best.sh except HICACHE=1: sglang's hierarchical cache (HiCache) keeps
 # a second cache tier in pinned host RAM and the UnifiedRadixCache evicts/ restores between
@@ -12,11 +12,15 @@
 # on this model lineage (Qwen3-Next / Qwen3.5 hicache suites) and the draft pools have
 # explicit host sidecars.
 #
-# SIZING — --hicache-size is PER RANK: 16 GiB/rank x 8 ranks = 128 GB pinned host RAM total
-# (this script's default, matching its name). The launcher splits it proportionally between
-# the KV and mamba host pools. Override per-rank size with e.g.:
-#   HICACHE_SIZE=32 ./serve_best_kv_128.sh    # 256 GB total
-# The box has ~1 TB RAM; keep 8 x HICACHE_SIZE well under it. No NIXL or other extra deps
+# SIZING — --hicache-size is PER RANK: 100 GiB/rank x 8 ranks = 800 GB pinned host RAM
+# total (this script's default). The launcher splits it proportionally between the KV and
+# mamba host pools (KV ~96%, mamba ~3.6% — the mamba slice grows with the tier but stays
+# the binding constraint). Override per-rank size with e.g.:
+#   HICACHE_SIZE=64 ./serve_best_kv_offload.sh    # 512 GB total
+# The box has ~1 TB RAM; the boot-time check (available - reserve) must pass for the whole
+# tier — 800 is validated, ~100/rank is near the practical ceiling (remember the ~50 GB
+# PLE pinned table + rank RSS + OS; and check `df -h /dev/shm` for orphaned tier files from
+# other engines before a big boot). No NIXL or other extra deps
 # are needed (nixl is only for L3 storage backends; the host tier uses the kernel IO backend).
 #
 # What to expect in logs/serve.log on a good boot:
@@ -39,8 +43,8 @@
 # (SIGINT to the whole process group; afterwards a sweep reaps any leftover SGLang GPU
 # processes). Output goes to the terminal AND logs/serve.log — run inside tmux/screen if
 # you need it to survive a disconnect. No systemd unit, no auto-start.
-#   ./serve_best_kv_128.sh              # start;  Ctrl+C to stop
-#   ./serve_best_kv_128.sh --port 8002  # extra args are appended to the sglang CLI (last-wins)
+#   ./serve_best_kv_offload.sh              # start;  Ctrl+C to stop
+#   ./serve_best_kv_offload.sh --port 8002  # extra args are appended to the sglang CLI (last-wins)
 # Needs the sm120 patches in sglang-official:  bash scripts/apply_patches.sh
 #
 # Pre-flight: refuses to start while the GPUs are busy (any other LLM server occupying
@@ -63,14 +67,14 @@ if [[ -n "$busy" && "${FORCE:-0}" != "1" ]]; then
 fi
 
 mkdir -p logs
-echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, 8-way, HiCache ${HICACHE_SIZE:-16} GiB/rank = $(( ${HICACHE_SIZE:-16} * 8 )) GB total host tier). Ctrl+C to stop. Logging to logs/serve.log"
+echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, 8-way, HiCache ${HICACHE_SIZE:-100} GiB/rank = $(( ${HICACHE_SIZE:-100} * 8 )) GB total host tier). Ctrl+C to stop. Logging to logs/serve.log"
 
 export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
-  KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=1 HICACHE_SIZE="${HICACHE_SIZE:-16}" \
+  KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=1 HICACHE_SIZE="${HICACHE_SIZE:-100}" \
   GDN_MTP_CACHE_MODE=none \
   SGLANG_SM120_LOWM_FP8_WEIGHT=1 SGLANG_SM120_LM_HEAD_FP8=1 \
-  CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48 CPU_OFFLOAD_GB=0 \
+  CUDAGRAPH_MAXBS=8 MAMBA_CACHE=96 CPU_OFFLOAD_GB=0 \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
 # MEMFRAC journey: 0.90 -> capture OOM (<100 MiB free, 2026-09-10 23:50); 0.85 -> text clean
 # under the OLD image backend but DISPROVEN 2026-09-14 with HiCache + pil: device pool leaves

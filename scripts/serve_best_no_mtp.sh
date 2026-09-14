@@ -10,7 +10,7 @@
 #
 # Only change vs serve_best.sh: SPEC=0 (drops --speculative-algorithm NEXTN + acceptance
 # thresholds + --speculative-token-map) and the MTP-specific GDN_MTP_CACHE_MODE. Everything
-# else is identical (HICACHE off, MEMFRAC 0.80, fp8 KV + fp8 stack, MAMBA_CACHE=48, 8-way) so
+# else is identical (HICACHE off, MEMFRAC 0.80, fp8 KV + fp8 stack, MAMBA_CACHE=96, 8-way) so
 # the comparison isolates MTP alone. Note: without spec decoding, the "MAMBA_CACHE must be
 # ~6x MAXREQ" rule no longer binds (it exists for the speculative CUDA graphs) — 48 is kept
 # anyway so only the MTP variable differs between the two profiles.

@@ -61,6 +61,14 @@ SSM_DTYPE="${SSM_DTYPE:-bfloat16}"
 # bf16 for flashinfer decode, and extra_buffer tracking needs checkpoints) -> needs jpezzulli's WY-output-only patch.
 # Known-good: LINEAR_BACKEND=triton. Keep extra_buffer always.
 MAMBA_RADIX="${MAMBA_RADIX:-extra_buffer}"
+# Radix checkpoint granularity for the GDN/mamba state. 2026-09-14: at 64 (the old value)
+# every ~506 tokens of prefill/decode stored a checkpoint — a single 5-12k-token agent
+# reply churned the whole pool and evicted the PREVIOUS turn's boundary checkpoint, i.e.
+# the next turn's cache hit (measured: cached=64 after a 6k-token reply, idle since).
+# 2048 = 32x less churn; the next-turn hit is at most 2048 tokens short of the previous
+# turn's end (~0.2 s re-prefill). Constraints: multiple of page-size (64), >= spec draft
+# tokens, >= chunk size.
+TRACK_INTERVAL="${TRACK_INTERVAL:-2048}"
 
 mkdir -p "$CACHE_BASE"/{huggingface,torch,torchinductor,triton,flashinfer,sglang/jit}
 export CUDA_HOME=/usr/local/cuda CUDACXX=/usr/local/cuda/bin/nvcc
@@ -99,7 +107,7 @@ args=(
 )
 [[ "$CPU_OFFLOAD_GB" -gt 0 ]] && args+=( --cpu-offload-gb "$CPU_OFFLOAD_GB" )
 [[ "$AUTOTUNE" == "1" ]] || args+=( --disable-flashinfer-autotune )   # default: autotune OFF (its parallel cicc JIT storm OOMs host RAM)
-[[ "$MAMBA_RADIX" == "extra_buffer" ]] && args+=( --mamba-track-interval 64 )   # state tracking only exists for extra_buffer
+[[ "$MAMBA_RADIX" == "extra_buffer" ]] && args+=( --mamba-track-interval "$TRACK_INTERVAL" )   # state tracking only exists for extra_buffer
 if [[ "$EP_SIZE" -gt 0 ]]; then
   [[ $((TP % EP_SIZE)) -eq 0 ]] || { echo "ERROR: TP=$TP is not divisible by EP_SIZE=$EP_SIZE"; exit 1; }
   args+=( --ep-size "$EP_SIZE" )

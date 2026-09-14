@@ -25,8 +25,9 @@ Run (after `git pull` on the machine):
 ```bash
 bash scripts/apply_patches.sh   # once per pull: ten sm120 patches into sglang-official (no rebuild)
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
-./scripts/serve_best_kv_128.sh  # serve_best + HiCache host tier: 128 GB RAM total (16 GiB/rank x 8;
-                                # KV + mamba state checkpoints offloaded; HICACHE_SIZE=N to change per-rank)
+./scripts/serve_best_kv_offload.sh  # DAILY (llmqwen): serve_best + HiCache host tier: 800 GB RAM
+                                 # total (100 GiB/rank x 8; KV + mamba state checkpoints
+                                 # offloaded; HICACHE_SIZE=N to change per-rank)
 ./scripts/serve_best_no_mtp.sh  # serve_best with MTP/spec decoding OFF (A/B done: MTP wins — diagnostic now)
 ./scripts/serve_single.sh       # one huge session: 786432 ctx (YaRN ×3), max KV pool
 ```
@@ -35,13 +36,13 @@ Both launchers run sglang **in the foreground** — Ctrl+C stops it (a cleanup s
 leftover SGLang GPU processes); logs also land in `logs/serve.log`. Use tmux/screen if you
 want the server to survive a disconnect. There is no systemd unit and no auto-start.
 
-**KV offload to RAM (HiCache):** `serve_best_kv_128.sh` enables sglang's hierarchical cache —
+**KV offload to RAM (HiCache):** `serve_best_kv_offload.sh` enables sglang's hierarchical cache —
 a pinned host-RAM tier holding evicted QSA/full-attention KV **and** the GDN/mamba state
 checkpoints. This branch (v0.5.19-era) supports the hybrid-mamba model natively: it routes
 through `UnifiedRadixCache` and attaches a `MambaPoolHost` beside the KV host pool; MTP stays
 on (CI-validated combo upstream). `--hicache-size` is **per rank** (16 GiB x 8 = 128 GB total
 here; `HICACHE_SIZE=N` to change), needs no NIXL/extra deps, and co-exists with the existing
-`extra_buffer` + `--mamba-track-interval 64` + fp8 KV config. Expect `hicache_attached=True`
+`extra_buffer` + `--mamba-track-interval 2048` + fp8 KV config. Expect `hicache_attached=True`
 in the boot log.
 
 **Validated 2026-09-14 (overflow/restore suite):** device-tier hits are bit-identical at
@@ -143,7 +144,7 @@ for the draft weights + packed draft layer + target-verify CUDA graphs. Keep MTP
 
 ```
 patches/            ten patches against sgl-project/sglang @ qwen4-main-squashed (see patches/README.md)
-scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_kv_128.sh (HiCache 128 GB)
+scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_kv_offload.sh (HiCache 800 GB, daily)
                     serve_best_no_mtp.sh (A/B MTP test) · serve_single.sh (786K ctx)
                     apply_patches.sh (idempotent, into sglang-official) · do_build.sh
                     bench_sglang.py · make_hot_tokens.py
@@ -179,6 +180,12 @@ are the TP8/EP8 bring-up fixes, all applied by `scripts/apply_patches.sh`):
 - FR-Spec: draft head scores a 64K hot-token subset of the 248K vocab (verify stays exact).
 - 8-way concurrency: `--max-mamba-cache-size` must be ~6× max-running-requests or the
   speculative CUDA graphs silently cap at bs=4 (8-way used to run *slower* than 4-way).
+  Now 96 (was 48; +0.33 GB VRAM/rank, −~50k tokens KV pool/rank).
+- `--mamba-track-interval 2048` (was 64): at 64 every ~506 tokens of prefill/decode stored
+  a GDN checkpoint, so a single 6k-token agent reply churned the whole checkpoint pool and
+  evicted the previous turn's boundary — the next turn re-prefilled from scratch (measured
+  2026-09-14: `cached=64` after a 6k-token reply + idle). At 2048 the next-turn hit is at
+  most 2048 tokens short (~0.2 s re-prefill). `TRACK_INTERVAL=N` to override.
 
 ## Reproduce
 
