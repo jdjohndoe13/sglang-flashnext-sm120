@@ -32,7 +32,9 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   23:16). serve.sh now prepends `$REPO/.venv/bin`.
 - **Graph-capture headroom on 32 GB cards**: MEMFRAC 0.90 preallocates the KV pool so tight
   that decode-graph capture OOM'd on every card (23:50 run: <100 MiB free, 128 MiB short).
-  Defaults now 0.85 (best) / 0.88 (single); if capture still OOMs, drop another notch.
+  Defaults now 0.80 (best) / 0.88 (single); if capture still OOMs, drop another notch.
+  0.85 was re-tested 2026-09-14 with HiCache + pil and DISPROVEN: ~1.0 GB free after the
+  KV pool, first long prefill CUDA-OOMs.
   KV pool cost: ~2.06M → ~1.8M tokens aggregate — irrelevant at 8-way/262144 ctx.
 - **Host RAM**: sglang does NOT need ~1 TB. Committed RAM is tens of GB (JIT compile capped
   by MAX_JOBS=4 / FLASHINFER_NINJA_JOBS=4, PLE pinned ~1.3 GB, schedulers/tokenizers small);
@@ -48,7 +50,8 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
 - **Image requests OOM'd on GPU 0** (00:14 run, MEMFRAC 0.85): the transformers *fast* image
   processor runs torch ops on GPU 0 inside the tokenizer process — on a card with <100 MiB
   free it dies. Fix: `--image-processor-backend pil` (CPU-only preprocessing; default in
-  serve.sh). With pil, MEMFRAC 0.85 likely works again.
+  serve.sh). With pil the on-GPU preproc OOM is gone, but MEMFRAC 0.85 still fails
+  (2026-09-14: long prefill CUDA-OOMs with ~1.0 GB free) — 0.80 is the validated default.
 - **Tool-call requests 400**: `"required": {}` (malformed tool schema from some agent
   frameworks) fails jsonschema validation → patch 0009 drops malformed `required` instead.
 - **Server-killing device assert (2026-09-11 00:56, under investigation)**: one long agent

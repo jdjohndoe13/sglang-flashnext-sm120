@@ -27,7 +27,7 @@ bash scripts/apply_patches.sh   # once per pull: ten sm120 patches into sglang-o
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
 ./scripts/serve_best_kv_128.sh  # serve_best + HiCache host tier: 128 GB RAM total (16 GiB/rank x 8;
                                 # KV + mamba state checkpoints offloaded; HICACHE_SIZE=N to change per-rank)
-./scripts/serve_best_no_mtp.sh  # serve_best with MTP/spec decoding OFF (A/B test MTP's speed contribution)
+./scripts/serve_best_no_mtp.sh  # serve_best with MTP/spec decoding OFF (A/B done: MTP wins — diagnostic now)
 ./scripts/serve_single.sh       # one huge session: 786432 ctx (YaRN ×3), max KV pool
 ```
 
@@ -42,9 +42,21 @@ through `UnifiedRadixCache` and attaches a `MambaPoolHost` beside the KV host po
 on (CI-validated combo upstream). `--hicache-size` is **per rank** (16 GiB x 8 = 128 GB total
 here; `HICACHE_SIZE=N` to change), needs no NIXL/extra deps, and co-exists with the existing
 `extra_buffer` + `--mamba-track-interval 64` + fp8 KV config. Expect `hicache_attached=True`
-in the boot log; open upstream caveats to watch: #33714 (long prompts back up only their
-first ~4096-token prefill chunk), #36743 (mamba restore vs deferred-COW race), #37613
-(mamba companion loss under host-pool pressure).
+in the boot log.
+
+**Validated 2026-09-14 (overflow/restore suite):** device-tier hits are bit-identical at
+temp 0 (no #36743 corruption); full prompts back up to the host tier (the #33714
+long-prompt gap did NOT bite on this branch); a production agent session restored a
+203,712-token prefix from the host tier. One structural limit: the host **mamba** slice is
+~3.6% of the tier (≈ 46 slots at 128 GB) while one 121k-token session churns ~240
+checkpoints (1 per 506 tok), so restore works only while churn since the session stays
+under ~23k tokens — i.e. reliably for same-session next-turn agent reuse, not for
+cross-session reuse after heavy traffic. Restoring needs more slots means a code change
+(per-session tail-only backup); sizing up can't fix it (mamba share is locked to the
+device-pool ratio, and the box's ~770 GB usable wouldn't hold 10 sessions anyway).
+Note: `/flush_cache` is deferred while requests are running, and the box's free RAM is a
+moving target — an orphaned 512 GB GLM tier file in `/dev/shm` (dead container) can squat
+on the host pool's boot budget; check `df -h /dev/shm` if the boot complains.
 
 **Why EP8:** pure TP8 cannot load this checkpoint — `moe_intermediate_size 640` sharded 8-way
 = 80/rank requires NVFP4 w13/w2-scale swizzle padding, which the loader refuses for gated
@@ -75,9 +87,11 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
 - `serve_best.sh` runs a post-ready warmup (one short + one ~40k-token request) so the lazy
   Triton kernels (pool alloc, sparse GQA prefill) device-load inside the startup window instead
   of on the user's first real request.
-- Memory: MEMFRAC 0.90 → graph-capture OOM; 0.85 → text clean but the on-GPU image preproc
-  OOM'd; **0.80 is the validated default** (KV pool ~1.62M tokens). With the pil backend, 0.85
-  is likely viable again — try it if you want the bigger pool. Host RAM: only tens of GB are
+- Memory: MEMFRAC 0.90 → graph-capture OOM; 0.85 → text clean under the old image backend
+  but **DISPROVEN 2026-09-14**: with pil and HiCache, 0.85 leaves only ~1.0 GB free and the
+  first long prefill CUDA-OOMs (see `logs/serve-hicache-80.log`); **0.80 is the validated
+  default** (KV pool ~1.62M tokens, ~2.5 GB free) — do not raise it. Host RAM: only tens of
+  GB are
   actually needed; the big "used" figure during load is page cache of the 206 shard files
   (reclaimable), so a 256 GB cap only slows (cold) weight loads.
 
@@ -117,6 +131,14 @@ validated with needle retrieval at 653K-token depth (start / middle / end all pa
 Validated with greedy/needle/cached-prefix/GSM/code gates and 2.4M tokens of soak testing
 (0 errors, flat VRAM/RAM).
 
+**MTP A/B on testcomp2 (2026-09-14, TP8+HiCache boot vs no-MTP boot, identical fresh-prompt
+probes at temp 0, 400 tok, `ignore_eos`; raw JSONL in `results/mtp-ab-2026-09-14/`):** NEXTN
+spec decoding wins at every concurrency — per-request 162 vs 119 tok/s single-stream (+36%),
+147 vs 94 at 2-way (+57%), ~126 vs 97 at 4-way (+30%), ~113 vs 90 at 8-way (+26%). Accept
+length holds 2.3–2.6 across all concurrencies (unlike the GLM/vLLM MTP wash). Cost: ~2 GB
+VRAM/GPU — the KV pool shrinks 1,868,992 → 1,622,848 tokens (−13%) at equal MEMFRAC 0.80,
+for the draft weights + packed draft layer + target-verify CUDA graphs. Keep MTP ON.
+
 ## Contents
 
 ```
@@ -126,7 +148,7 @@ scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_k
                     apply_patches.sh (idempotent, into sglang-official) · do_build.sh
                     bench_sglang.py · make_hot_tokens.py
 docs/               STATUS.md (ops guide) · PERF_CEILING.md (analysis + dead-ends)
-results/            benchmark JSONs, baseline -> final
+results/            benchmark JSONs, baseline -> final · mtp-ab-2026-09-14/ (MTP on/off probe data)
 hot_tokens_64k.pt   FR-Spec draft-vocab map
 ```
 

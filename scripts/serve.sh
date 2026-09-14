@@ -32,6 +32,8 @@ EP_SIZE="${EP_SIZE:-0}"             # >0: MoE expert parallel (--ep-size; must d
                                     # all-GPU configuration.
 CTX="${CTX:-262144}"                # native window (full rope); YaRN beyond 262144
 MEMFRAC="${MEMFRAC:-0.90}"          # start here on 32 GB cards; OOM at load -> 0.88/0.85
+                                    # (8x32GB TP8: validated floor is 0.80 — 0.85 leaves
+                                    # ~1.0 GB and the first long prefill CUDA-OOMs)
 MAXREQ="${MAXREQ:-8}"
 LINEAR_BACKEND="${LINEAR_BACKEND:-triton}"   # safe: triton;  perf: flashinfer (sm120, patches applied)
 SPEC="${SPEC:-1}"                   # 1 = enable native NEXTN MTP, 0 = disable
@@ -124,7 +126,7 @@ SPEC_TOKEN_MAP="${SPEC_TOKEN_MAP:-$ROOT/hot_tokens_64k.pt}"
   --speculative-accept-threshold-single "$SPEC_ACCEPT_SINGLE" --speculative-accept-threshold-acc "$SPEC_ACCEPT_ACC" )
 [[ "$SPEC" == "1" && "$SPEC_TOKEN_MAP" != "none" && -f "$SPEC_TOKEN_MAP" ]] && args+=( --speculative-token-map "$SPEC_TOKEN_MAP" )
 [[ "$HICACHE" == "1" ]] && args+=( --enable-hierarchical-cache --hicache-size "$HICACHE_SIZE"
-  --hicache-host-memory-mode cache --hicache-write-policy write_through --hicache-io-backend kernel )
+  --hicache-write-policy write_through --hicache-io-backend kernel )
 
 # Long-context YaRN rope override (factor = CTX/262144 for CTX beyond the native window).
 # Fields mirror the checkpoint's rope_parameters with rope_type default->yarn (jpezzulli ran

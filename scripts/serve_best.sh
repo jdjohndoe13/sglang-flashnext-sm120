@@ -48,10 +48,9 @@ export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${C
   CUDAGRAPH_MAXBS=8 MAMBA_CACHE=48 CPU_OFFLOAD_GB=0 \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
 # MEMFRAC journey: 0.90 -> capture OOM (<100 MiB free, 2026-09-10 23:50); 0.85 -> text clean
-# (245,109-token prompts at bs 1/2/4/8, user-validated) but on-GPU image preprocessing in the
-# tokenizer process OOM'd with <100 MiB free; user-validated default now 0.80. With the pil
-# image backend (CPU-only preprocessing, default in serve.sh) 0.85 likely works again — try it
-# if you want the bigger KV pool.
+# under the OLD image backend but DISPROVEN 2026-09-14 with HiCache + pil: device pool leaves
+# only ~1.0 GB and the first long prefill CUDA-OOMs (logs/serve-hicache-80.log). 0.80 is the
+# only validated value — do not raise it.
 
 trap 'true' INT   # wrapper survives Ctrl+C so the cleanup sweep below still runs
 set +e

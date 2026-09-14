@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-09-13T00:00:00.000Z",
+  "dependencies": [
+    {
+      "name": "sglang",
+      "resolvedVersion": "0.5.20.dev11+g4ccff141d",
+      "repoUrl": "https://github.com/sgl-project/sglang.git",
+      "ref": "4ccff141dbe992794f9da6c3aa23535b4f72000d",
+      "path": ".slim/clonedeps/repos/sgl-project__sglang",
+      "packagePath": "python/sglang",
+      "reason": "Exact branch (qwen4-main-squashed) the deployment venv runs; inspected for HiCache/kv-cache routing (UnifiedRadixCache, hybrid_pool_assembler, MambaPoolHost, server_args validation)"
+    }
+  ]
+}
