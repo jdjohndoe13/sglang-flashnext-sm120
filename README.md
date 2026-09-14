@@ -15,7 +15,7 @@ scripts are re-pointed and re-tuned for this box (32 GB/card, TP8, 1 TB host RAM
 
 | | value |
 |---|---|
-| this repo on the machine | `/mnt/data/shared/models/qwen3.8-flash-next-nvfp4-sglang` |
+| this repo on the machine | `/mnt/data/shared/models/sglang-flashnext-sm120` |
 | sglang checkout + venv | `sglang-official/` inside the repo (branch `qwen4-main-squashed` @ `4ccff141` + patches) |
 | model checkpoint | `/mnt/huggingface/RadixArk/Qwen3.8-Flash-Next-NVFP4` |
 | caches | `cache/` inside the repo (gitignored; `CACHE_BASE` to override) |
@@ -25,12 +25,26 @@ Run (after `git pull` on the machine):
 ```bash
 bash scripts/apply_patches.sh   # once per pull: ten sm120 patches into sglang-official (no rebuild)
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
+./scripts/serve_best_kv_128.sh  # serve_best + HiCache host tier: 128 GB RAM total (16 GiB/rank x 8;
+                                # KV + mamba state checkpoints offloaded; HICACHE_SIZE=N to change per-rank)
+./scripts/serve_best_no_mtp.sh  # serve_best with MTP/spec decoding OFF (A/B test MTP's speed contribution)
 ./scripts/serve_single.sh       # one huge session: 786432 ctx (YaRN ×3), max KV pool
 ```
 
 Both launchers run sglang **in the foreground** — Ctrl+C stops it (a cleanup sweep reaps any
 leftover SGLang GPU processes); logs also land in `logs/serve.log`. Use tmux/screen if you
 want the server to survive a disconnect. There is no systemd unit and no auto-start.
+
+**KV offload to RAM (HiCache):** `serve_best_kv_128.sh` enables sglang's hierarchical cache —
+a pinned host-RAM tier holding evicted QSA/full-attention KV **and** the GDN/mamba state
+checkpoints. This branch (v0.5.19-era) supports the hybrid-mamba model natively: it routes
+through `UnifiedRadixCache` and attaches a `MambaPoolHost` beside the KV host pool; MTP stays
+on (CI-validated combo upstream). `--hicache-size` is **per rank** (16 GiB x 8 = 128 GB total
+here; `HICACHE_SIZE=N` to change), needs no NIXL/extra deps, and co-exists with the existing
+`extra_buffer` + `--mamba-track-interval 64` + fp8 KV config. Expect `hicache_attached=True`
+in the boot log; open upstream caveats to watch: #33714 (long prompts back up only their
+first ~4096-token prefill chunk), #36743 (mamba restore vs deferred-COW race), #37613
+(mamba companion loss under host-pool pressure).
 
 **Why EP8:** pure TP8 cannot load this checkpoint — `moe_intermediate_size 640` sharded 8-way
 = 80/rank requires NVFP4 w13/w2-scale swizzle padding, which the loader refuses for gated
@@ -107,7 +121,8 @@ Validated with greedy/needle/cached-prefix/GSM/code gates and 2.4M tokens of soa
 
 ```
 patches/            ten patches against sgl-project/sglang @ qwen4-main-squashed (see patches/README.md)
-scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_single.sh (786K ctx)
+scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_kv_128.sh (HiCache 128 GB)
+                    serve_best_no_mtp.sh (A/B MTP test) · serve_single.sh (786K ctx)
                     apply_patches.sh (idempotent, into sglang-official) · do_build.sh
                     bench_sglang.py · make_hot_tokens.py
 docs/               STATUS.md (ops guide) · PERF_CEILING.md (analysis + dead-ends)

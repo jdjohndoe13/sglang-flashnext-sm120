@@ -35,7 +35,13 @@ MEMFRAC="${MEMFRAC:-0.90}"          # start here on 32 GB cards; OOM at load -> 
 MAXREQ="${MAXREQ:-8}"
 LINEAR_BACKEND="${LINEAR_BACKEND:-triton}"   # safe: triton;  perf: flashinfer (sm120, patches applied)
 SPEC="${SPEC:-1}"                   # 1 = enable native NEXTN MTP, 0 = disable
-HICACHE="${HICACHE:-0}"             # 0 = off (no NIXL);  1 = enable hierarchical cache
+HICACHE="${HICACHE:-0}"             # 1 = HiCache host tier: KV + mamba state checkpoints offloaded
+                                    #     to pinned host RAM via UnifiedRadixCache (hybrid-SSM models
+                                    #     route here automatically; MTP/spec decoding is supported).
+                                    #     No extra deps: nixl is only for L3 storage backends — the
+                                    #     host tier uses --hicache-io-backend kernel.
+HICACHE_SIZE="${HICACHE_SIZE:-32}"  # host-tier GiB PER RANK, only used when HICACHE=1 (TP8 -> total
+                                    # pinned host RAM = 8 x HICACHE_SIZE; e.g. 16 -> 128 GB total)
 CUDAGRAPH_MAXBS="${CUDAGRAPH_MAXBS:-8}"   # must be >= MAXREQ. On a box with a desktop
                                           # session holding VRAM, keep this small (see docs).
 CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-0}"     # offload N GB of weights to host RAM for extra VRAM headroom (costs throughput)
@@ -117,7 +123,7 @@ SPEC_TOKEN_MAP="${SPEC_TOKEN_MAP:-$ROOT/hot_tokens_64k.pt}"
   --speculative-eagle-topk 1 --speculative-num-draft-tokens "$SPEC_DRAFT" --speculative-draft-model-quantization unquant
   --speculative-accept-threshold-single "$SPEC_ACCEPT_SINGLE" --speculative-accept-threshold-acc "$SPEC_ACCEPT_ACC" )
 [[ "$SPEC" == "1" && "$SPEC_TOKEN_MAP" != "none" && -f "$SPEC_TOKEN_MAP" ]] && args+=( --speculative-token-map "$SPEC_TOKEN_MAP" )
-[[ "$HICACHE" == "1" ]] && args+=( --enable-hierarchical-cache --hicache-size 32
+[[ "$HICACHE" == "1" ]] && args+=( --enable-hierarchical-cache --hicache-size "$HICACHE_SIZE"
   --hicache-host-memory-mode cache --hicache-write-policy write_through --hicache-io-backend kernel )
 
 # Long-context YaRN rope override (factor = CTX/262144 for CTX beyond the native window).
