@@ -7,3 +7,6 @@ cache/
 # BEGIN oh-my-opencode-slim clonedeps
 .slim/clonedeps/repos/
 # END oh-my-opencode-slim clonedeps
+/prompt-tests/
+/results/
+/tmp/
