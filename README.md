@@ -95,6 +95,12 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
   GB are
   actually needed; the big "used" figure during load is page cache of the 206 shard files
   (reclaimable), so a 256 GB cap only slows (cold) weight loads.
+- **32-way concurrency (2026-10-27):** MAXREQ 32 + graphs to bs 32 + mamba 192 eat ~1.5 GB/rank
+  more static than 8-way; at MEMFRAC 0.80 that left only ~0.97 GB free and the first 16k-token
+  extend batch CUDA-OOMed in the PLE short-conv (78 MiB alloc, 54 MiB device-free — token usage
+  was 0.18, so the KV pool was NOT the victim). Fix: `serve_best_kv_offload.sh` now caps the KV
+  pool via `MAX_TOTAL_TOKENS=1048576` (≡ `--max-total-tokens`), returning ~2 GB/rank to the
+  activation headroom; the pool stays ~4× the observed peak (262k in use). MEMFRAC stays 0.80.
 
 The launchers refuse to start while GPUs are busy (anything else occupying the cards —
 stop it first; offending PIDs are printed, `FORCE=1` overrides).

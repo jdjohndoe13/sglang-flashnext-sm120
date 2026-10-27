@@ -46,6 +46,9 @@ HICACHE_SIZE="${HICACHE_SIZE:-32}"  # host-tier GiB PER RANK, only used when HIC
                                     # pinned host RAM = 8 x HICACHE_SIZE; e.g. 16 -> 128 GB total)
 CUDAGRAPH_MAXBS="${CUDAGRAPH_MAXBS:-8}"   # must be >= MAXREQ. On a box with a desktop
                                           # session holding VRAM, keep this small (see docs).
+MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-}"  # optional KV-pool cap (e.g. 1048576). Shrinks the
+                                          # pool independently of MEMFRAC, returning VRAM to the
+                                          # non-static (activation) headroom. Empty = auto.
 CPU_OFFLOAD_GB="${CPU_OFFLOAD_GB:-0}"     # offload N GB of weights to host RAM for extra VRAM headroom (costs throughput)
 AUTOTUNE="${AUTOTUNE:-0}"                  # 0 = disable flashinfer autotune (avoids the parallel-cicc RAM storm); 1 = enable (only with low MAX_JOBS)
 KVDTYPE="${KVDTYPE:-auto}"                 # auto (fp16/bf16, triton-safe) or fp8_e4m3 (needs flashinfer backend; crashes triton GDN/QSA)
@@ -106,6 +109,7 @@ args=(
   --enable-request-time-stats-logging --enable-metrics --watchdog-timeout 1800
 )
 [[ "$CPU_OFFLOAD_GB" -gt 0 ]] && args+=( --cpu-offload-gb "$CPU_OFFLOAD_GB" )
+[[ -n "$MAX_TOTAL_TOKENS" ]] && args+=( --max-total-tokens "$MAX_TOTAL_TOKENS" )
 [[ "$AUTOTUNE" == "1" ]] || args+=( --disable-flashinfer-autotune )   # default: autotune OFF (its parallel cicc JIT storm OOMs host RAM)
 [[ "$MAMBA_RADIX" == "extra_buffer" ]] && args+=( --mamba-track-interval "$TRACK_INTERVAL" )   # state tracking only exists for extra_buffer
 if [[ "$EP_SIZE" -gt 0 ]]; then

@@ -1,3 +1,5 @@
+!.slim/deepwork/
+!.slim/deepwork/**
 # BEGIN oh-my-opencode-slim clonedeps
 !.slim/
 !.slim/clonedeps.json

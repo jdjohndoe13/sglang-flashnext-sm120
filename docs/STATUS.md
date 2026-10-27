@@ -36,6 +36,21 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
   0.85 was re-tested 2026-09-14 with HiCache + pil and DISPROVEN: ~1.0 GB free after the
   KV pool, first long prefill CUDA-OOMs.
   KV pool cost: ~2.06M → ~1.8M tokens aggregate — irrelevant at 8-way/262144 ctx.
+- **32-way CUDA-OOM crash (2026-10-27 10:25:52) — RESOLVED by MAX_TOTAL_TOKENS cap**: the
+  daily HiCache boot ran MAXREQ=32 / CUDAGRAPH_MAXBS=32 / MAMBA_CACHE=192 at MEMFRAC 0.80.
+  Boot log: `max_total_num_tokens=1377792, available_gpu_mem=2.44 GB` → by first real traffic
+  only **0.97 GiB free** (late Triton kernel-load warnings). The 32-way extras (mamba pool
+  +0.63 GB, verify graphs bs≤32 1.63 GB, draft graphs +0.93 GB) consumed the ~2.5 GB
+  activation headroom the 8-way boot had. OOM: 78 MiB `F.silu` alloc in the PLE short-conv
+  during an eager 16k-token **extend** batch (54 MiB device-free, `expandable_segments`
+  mapping OOMs, 1.38 GB reserved-unallocated → fragmentation). NOT KV pressure: token usage
+  0.18, mamba 0.12, 6 running + 7 queued. Proxy logs: steady ~3.3 req/s batch job (max
+  in-flight 35) + one 149,758-token streaming session; 502s already at 10:24:54; zombie
+  window 10:25:52–10:26:58 (process accepted connections, answered nothing); ~13.5 min
+  outage; the ~30 orphaned proxy reqs at 10:27:03/15 are post-crash retry rounds.
+  **Fix**: `serve_best_kv_offload.sh` sets `MAX_TOTAL_TOKENS=1048576` (KV pool cap,
+  independent of MEMFRAC; frees ~2 GB/rank). MEMFRAC stays 0.80 (0.85 disproven).
+  `serve.sh` gained a `MAX_TOTAL_TOKENS` env → `--max-total-tokens`.
 - **Host RAM**: sglang does NOT need ~1 TB. Committed RAM is tens of GB (JIT compile capped
   by MAX_JOBS=4 / FLASHINFER_NINJA_JOBS=4, PLE pinned ~1.3 GB, schedulers/tokenizers small);
   the large "used" figure is Linux page cache over the 206 shard files — reclaimable, only

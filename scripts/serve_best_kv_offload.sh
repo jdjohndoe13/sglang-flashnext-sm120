@@ -67,14 +67,36 @@ if [[ -n "$busy" && "${FORCE:-0}" != "1" ]]; then
 fi
 
 mkdir -p logs
-echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, 8-way, HiCache ${HICACHE_SIZE:-100} GiB/rank = $(( ${HICACHE_SIZE:-100} * 8 )) GB total host tier). Ctrl+C to stop. Logging to logs/serve.log"
+# Concurrency is env-overridable; the three knobs MUST move together (see below).
+MAXREQ="${MAXREQ:-32}"
+MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-1048576}"   # KV-pool cap — see the block below the echo
+echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, ${MAXREQ}-way, HiCache ${HICACHE_SIZE:-100} GiB/rank = $(( ${HICACHE_SIZE:-100} * 8 )) GB total host tier, KV pool cap ${MAX_TOTAL_TOKENS}). Ctrl+C to stop. Logging to logs/serve.log"
 
-export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${CTX:-262144}" MAXREQ="${MAXREQ:-8}" \
+# MAXREQ / CUDAGRAPH_MAXBS / MAMBA_CACHE must be consistent:
+#   * CUDAGRAPH_MAXBS >= MAXREQ or decode batches above it fall back to eager (no graph) —
+#     the "spec graphs silently cap concurrency" failure mode.
+#   * Each request needs 5 GDN state slots (3 base + 2 extra_buffer ping-pong with overlap
+#     on; see kv_cache_configurator._calculate_mamba_ratio). max_mamba_cache_size // 5 is
+#     the real concurrency ceiling: 96 slots capped a MAXREQ=32 boot to 19 (2026-10-26).
+#     6x MAXREQ keeps the same 1.2x headroom as the 8-way default.
+#   * 192 slots ≈ +0.65 GB/rank vs 96 (mamba pool ~1.3 GB); with MAXREQ>=32 the extra
+#     decode graphs (bs 12/16/24/32) add ~1-2 GB. Together with the 0.80 static budget this
+#     leaves only ~1.0 GB non-static headroom/rank — the first 16k-token extend batch then
+#     CUDA-OOMs inside the PLE short-conv (crash 2026-10-27 10:25:52: 78 MiB F.silu alloc,
+#     54 MiB device-free, expandable_segments mapping OOMs; token usage only 0.18 — the KV
+#     pool was NOT the victim). Fix: MAX_TOTAL_TOKENS caps the KV pool independently of
+#     MEMFRAC (see below).
+# MAX_TOTAL_TOKENS=1048576 (default here): KV pool 1,377,792 (auto) -> 1,048,576 returns
+# ~2.0 GB/rank to the activation headroom (free ~2.9 GB at init). The pool is still ~4x the
+# observed peak need (262k tokens in use at the crash; a 150k-token session + 32-way traffic
+# — see docs/STATUS.md) and HiCache absorbs the overflow.
+export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${CTX:-262144}" MAXREQ="$MAXREQ" \
+  MAX_TOTAL_TOKENS="$MAX_TOTAL_TOKENS" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
   KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=1 HICACHE_SIZE="${HICACHE_SIZE:-100}" \
   GDN_MTP_CACHE_MODE=none \
   SGLANG_SM120_LOWM_FP8_WEIGHT=1 SGLANG_SM120_LM_HEAD_FP8=1 \
-  CUDAGRAPH_MAXBS=8 MAMBA_CACHE=96 CPU_OFFLOAD_GB=0 \
+  CUDAGRAPH_MAXBS="${CUDAGRAPH_MAXBS:-$MAXREQ}" MAMBA_CACHE="${MAMBA_CACHE:-$((6 * MAXREQ))}" CPU_OFFLOAD_GB=0 \
   AUTOTUNE=1 MAX_JOBS=4 FLASHINFER_NINJA_JOBS=4 FLASHINFER_NVCC_THREADS=2
 # MEMFRAC journey: 0.90 -> capture OOM (<100 MiB free, 2026-09-10 23:50); 0.85 -> text clean
 # under the OLD image backend but DISPROVEN 2026-09-14 with HiCache + pil: device pool leaves
