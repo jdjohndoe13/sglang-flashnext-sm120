@@ -223,7 +223,11 @@ async function runChain(lane, kind, deadline, log) {
       const textOut = (m.content || '') + '\n' + (m.reasoning_content || '');
       scanText(textOut, lane.id, 'output', hits);
       scanToolCalls(m.tool_calls, lane.id, hits);
-      for (const h of hits) { lane.hits.push(h); lane.hitCount++; log({ ev: 'HIT', lane: lane.id, hex, kind, ...h }); }
+      for (const h of hits) {
+        lane.hits.push(h); lane.hitCount++;
+        log({ ev: 'HIT', lane: lane.id, hex, kind, ...h });
+        console.log(`!!! ${h.type} lane=${lane.id} ${h.name || h.canary || ''} (hex ${hex}) ${new Date().toISOString()}`);
+      }
       ctxBytes += JSON.stringify(m).length;
       lane.reqs++;
       lane.tokIn += resp.usage?.prompt_tokens || 0;
