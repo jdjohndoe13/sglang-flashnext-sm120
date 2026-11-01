@@ -163,14 +163,38 @@ function scanText(text, laneIdx, where, out) {
     }
   }
 }
+// ---------- novel-content detection (the incoherent-KV class) ----------
+// The synthetic world is FULLY controlled: every legitimate path is
+// /work/<hex>/... (the lane's own) or /srv/agents (from the system prompt).
+// An IP address, a Windows drive path, or an absolute path outside that
+// world is content the model cannot have seen — the 2026-11-01 HICACHE=1
+// contamination class (192.168.10.100, /data/launchpad/, browser-laptop
+// were born in responses, absent from every request in the proxy archive).
+// The canary check alone missed this: it only sees verbatim copies of its
+// own canaries. Novel content is the stronger detector.
+const NOVEL_RES = [
+  { re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, kind: 'ip' },
+  { re: /\b[A-Za-z]:\\[^\s"'`)\]]+/g, kind: 'drive_path' },
+  { re: /(?:^|[\s"'(])\/(?:data|home|root|Users|mnt|etc|proc|sys|var|usr|opt|srv)(?!\/agents)\/[^\s"'`)\]]*/g, kind: 'abs_path' },
+  { re: /(?:^|[\s"'(])\/[a-z]\/[A-Za-z][^\s"'`)\]]*/g, kind: 'drive_path' },  // git-bash /c/Users/... (the kirill shape)
+];
+function scanNovel(text, laneIdx, where, out) {
+  if (!text) return;
+  for (const { re, kind } of NOVEL_RES) {
+    re.lastIndex = 0;
+    const m = re.exec(text);
+    if (m) out.push({ type: 'NOVEL_CONTENT', kind, value: m[0].slice(0, 80), lane: laneIdx, where });
+  }
+}
 function scanToolCalls(toolCalls, laneIdx, out) {
   for (const tc of toolCalls || []) {
     const name = tc.function?.name;
     if (name && !TOOL_NAMES.has(name)) {
       out.push({ type: 'UNKNOWN_TOOL', name, lane: laneIdx, known_confab: KNOWN_CONFABULATIONS.has(name) });
     }
-    // tool arguments may also leak canaries
+    // tool arguments may also leak canaries or novel content
     scanText(tc.function?.arguments, laneIdx, 'tool_args', out);
+    scanNovel(tc.function?.arguments, laneIdx, 'tool_args', out);
   }
 }
 
@@ -228,6 +252,7 @@ async function runChain(lane, kind, deadline, log) {
       const m = resp.msg;
       const textOut = (m.content || '') + '\n' + (m.reasoning_content || '');
       scanText(textOut, lane.id, 'output', hits);
+      scanNovel(textOut, lane.id, 'output', hits);
       scanToolCalls(m.tool_calls, lane.id, hits);
       for (const h of hits) {
         lane.hits.push(h); lane.hitCount++;
@@ -302,6 +327,7 @@ const errs = lanes.reduce((a, l) => a + l.errors, 0);
 const allHits = lanes.flatMap(l => l.hits);
 const leaks = allHits.filter(h => h.type === 'CROSS_SESSION_LEAK');
 const unk = allHits.filter(h => h.type === 'UNKNOWN_TOOL');
+const novel = allHits.filter(h => h.type === 'NOVEL_CONTENT');
 const summary = {
   bench: 'agent_hallucination_bench',
   base: BASE, model: MODEL,
@@ -313,8 +339,10 @@ const summary = {
   cross_session_leaks: leaks.length,
   unknown_tool_calls: unk.length,
   unknown_tool_names: [...new Set(unk.map(h => h.name))],
+  novel_content_hits: novel.length,
+  novel_content_samples: novel.slice(0, 20),
   leaks: leaks.slice(0, 20),
 };
 writeFileSync(OUT.replace(/\.jsonl$/, '') + '.summary.json', JSON.stringify(summary, null, 2));
 console.log(JSON.stringify(summary, null, 2));
-process.exit(leaks.length + unk.length > 0 ? 1 : 0);
+process.exit(leaks.length + unk.length + novel.length > 0 ? 1 : 0);

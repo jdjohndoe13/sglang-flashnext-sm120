@@ -40,6 +40,10 @@ while ($true) {
   $t = RemoteCount $patTools
   $p = RemoteCount $patParams
   if ($t -lt 0) { Write-Host "[!] ssh check failed at $(Get-Date -Format HH:mm:ss)"; continue }
+  # count dropped below what we last saw -> the log was truncated (server
+  # restart). Re-baseline so the restart's own hits are still detected.
+  if ($t -lt $lastTools) { Write-Host "[i] serve.log truncated (restart?) at $(Get-Date -Format HH:mm:ss) - re-baselining tools-list=$t" -ForegroundColor Cyan; $lastTools = $t }
+  if ($p -lt $lastParams) { $lastParams = $p }
   if ($t -gt $lastTools) {
     $new = $t - $lastTools
     Write-Host ("!!! SERVER-SIDE UNKNOWN-TOOL: {0} new line(s) (total {1} vs baseline {2})  {3}" -f $new, $t, $baseTools, (Get-Date -Format 'HH:mm:ss')) -ForegroundColor Red
