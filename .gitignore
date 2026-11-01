@@ -11,3 +11,6 @@ cache/
 /prompt-tests/
 /results/
 /tmp/
+# bench run artifacts
+bench-run.jsonl
+*.summary.json
