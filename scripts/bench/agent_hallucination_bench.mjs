@@ -214,6 +214,12 @@ async function runChain(lane, kind, deadline, log) {
       try {
         resp = await chat(msgs, deadline);
       } catch (e) {
+        if (Date.now() >= deadline) {
+          // the run's deadline cut this request in flight: clean shutdown,
+          // not an error. Don't pollute the errors count.
+          log({ ev: 'deadline', lane: lane.id, hex, kind, turn: turns });
+          break;
+        }
         log({ ev: 'error', lane: lane.id, hex, kind, turn: turns, err: String(e).slice(0, 200) });
         lane.errors++;
         await sleep(3000);
