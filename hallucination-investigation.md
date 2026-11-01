@@ -617,3 +617,80 @@ necessary-but-not-sufficient, or the fork's `extra_buffer`
 mamba-radix-cache strategy may have an additional race the fences
 don't cover. The evidence package (this §13 + the proxy req/resp
 pairs above) is ready to attach to an upstream report.
+
+## 14. ROOT CAUSE FOUND + FIX: the QSA indexer state gap (2026-11-01)
+
+The "additional race" suspected in §13 is now identified — and it is
+not a race. It is a **missing state transfer**: the QSA sparse-
+attention indexer's compressed keys are never backed up to the host
+tier at all.
+
+**The gap (verified in the live tree, `a34f194c1a`):** the model's
+compressed index keys live in `QSATokenToKVPool.qsa_compressed_k_buffer_pool`
+— a separate GPU buffer **outside** `full_kv_pool`. The HiCache host
+stack for this model is assembled by `build_hybrid_mamba_stack`
+(`hybrid_pool_assembler.py`) as `pools="KV + MAMBA"` — there is no
+INDEXER entry (the `DSAIndexerPoolHost` sidecar exists but is wired
+only for the DSA/MiniMax draft-pool paths, :1037/:1494/:1932). The
+fork's `IndexKeyCache` (the Qwen3-Next-DSA variant) has
+`cpu_copy`/`load_cpu_copy` hooks, but the QSA compressed pool has no
+host mirror at all.
+
+**Why this produces exactly the §13 class:** when a prefix is
+evicted to RAM and later restored, the KV and mamba state come back
+correctly (0012/0013 fence those), but the indexer's compressed keys
+are whatever the GPU allocator handed out next — **another request's
+keys**. The QSA indexer then selects the wrong attention blocks for
+the restored prefix: the model attends to mismatched content and
+confabulates coherent-in-intent, false-in-content specifics (a
+192.168.10.x LAN IP, `:8000`, `/data/launchpad/`, `browser-laptop`).
+That is why the content was "born in the response" (§13) — it is not
+a copy of another session's text; it is the model's own generation
+over incoherent attention. And it is why the fences (0012/0013) were
+necessary but NOT sufficient: they fence the mamba state, which was
+already being restored correctly.
+
+**The fix — upstream PR #39893** (open, 2026-09-17, alphabetc1,
+"fix: preserve QSA indexer state through HiCache", tested on the
+exact model on B200; its removal test showed 93.8% mismatched
+elements without the consumer fence). Ported to the fork's API as
+**patch 0014** (`patches/0014-hicache-qsa-indexer-state.patch`,
+`git apply`, uncommitted — the live tree has it applied and the
+changed files compile + import in the deployment venv):
+
+1. `mem_cache/pool_host/qsa.py` (new): `QSAIndexerPoolHost` —
+   page-row host mirror of the compressed keys, packed (target
+   layers + MTP draft) keyed by full-KV token slots; built on the
+   fork's `DeepSeekV4PagedHostPool` (the fork's version lacks the
+   PR's `page_aligned_only` kwarg — omitted; the QSA transfers are
+   always whole-KV-page so the token-granular fallback is never
+   taken).
+2. `build_hybrid_mamba_stack`: optional `qsa_pool` arg → shrink the
+   KV host slice proportionally, add the `PoolName.INDEXER` entry
+   with its own (pre-extension) layer mapping.
+3. `_MambaStrategy.build`: detect `QSATokenToKVPool`, pass it,
+   register `SidecarPoolSpec(INDEXER, KV)` — the fork's
+   `UnifiedRadixCache` sidecar machinery (indices ride the KV pool,
+   all-or-nothing KV clamp) is generic and needed no changes.
+   `pools_desc` becomes `KV + MAMBA + INDEXER`.
+4. `get_qsa_compressed_k_buffer`: the consumer fence
+   `_wait_for_layer(layer_id)` (the indexer must wait for the
+   layer's H2D event before reading restored keys).
+
+**Validation on the live box (2026-11-01, alongside the running
+server, `scripts/test_qsa_indexer_hicache.py`):**
+
+- D→H backup → poison → H→D restore to different pages → read
+  through the production accessor: **bit-exact**.
+- With the fence + a busy H2D stream: bit-exact.
+- **Negative control (fence removed): race observed — stale data.**
+  The test detects exactly the bug class, and the fence is what
+  fixes it.
+- `host.size == anchor.size` (the sidecar rides the KV slot space);
+  size-per-token parity holds.
+
+**Status:** the patch is applied to the live tree (inert on the
+current HICACHE=0 boot — no host tier exists). The A/B gate is the
+60-min bench with the NOVEL_CONTENT detector on HICACHE=1 + the
+watcher; the boot must log `pools=KV + MAMBA + INDEXER`. Until that
+passes, **HICACHE=0 remains the only safe profile**.

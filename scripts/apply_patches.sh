@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the ten sm120 patches to ./sglang-official (branch qwen4-main-squashed).
+# Apply the thirteen sm120 patches to ./sglang-official (branch qwen4-main-squashed).
 # IDEMPOTENT: each patch is skipped if already applied (or conflicting) — safe to re-run
 # after every `git pull` of this repo. Editable install => no rebuild needed afterwards.
 #
@@ -33,6 +33,13 @@
 #   0013  Deferred mamba COW waits for the final HiCache layer [git apply]
 #         (upstream #36743, adapted: whole-slot COW can copy partial restored
 #          mamba state; companion to 0012, also required before HICACHE=1)
+#   0014  Preserve QSA indexer state through HiCache [git apply]
+#         (upstream #39893, ported to this fork's API: the QSA compressed index
+#          keys live outside full_kv_pool and were NEVER mirrored to the host
+#          tier, so a restored prefix restored KV+mamba but re-used another
+#          request's indexer keys -> wrong attention blocks -> the 2026-11-01
+#          hallucination class that 0012/0013 alone did NOT prevent.
+#          REQUIRED before re-enabling HICACHE=1)
 set -euo pipefail
 # Locate the repo root (script normally lives at <repo>/scripts/). If run in an exotic way
 # (stdin/`bash -s`), fall back to cwd when it looks like the repo root, else fail loudly.
@@ -80,6 +87,7 @@ apply_one 0008-served-model-aliases.patch apply
 apply_one 0009-tolerant-tool-schema-required.patch apply
 apply_one 0012-hicache-load-fence.patch apply
 apply_one 0013-mamba-cow-load-fence.patch apply
+apply_one 0014-hicache-qsa-indexer-state.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then

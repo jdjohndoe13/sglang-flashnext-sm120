@@ -1,0 +1,231 @@
+diff --git a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+index bedf086..31ac953 100644
+--- a/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
++++ b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_pool_assembler.py
+@@ -27,6 +27,7 @@ from sglang.srt.mem_cache.pool_host.mha import (
+     get_mha_host_pool_cls,
+ )
+ from sglang.srt.mem_cache.pool_host.mla import MLATokenToKVPoolHost
++from sglang.srt.mem_cache.pool_host.qsa import QSAIndexerPoolHost
+ from sglang.srt.mem_cache.unified_cache.component_type import ComponentType
+ from sglang.srt.runtime_context import get_memory, get_parallel
+ 
+@@ -681,6 +682,7 @@ def build_hybrid_mamba_stack(
+     load_cache_event,
+     storage_backend: Optional[str],
+     use_mla: bool,
++    qsa_pool: Any = None,
+     host_mamba_evict_fn: Optional[Callable[[int], Any]] = None,
+     device_mamba_evict_fn: Optional[Callable[[int], Any]] = None,
+     prefetch_threshold: int = 256,
+@@ -690,6 +692,7 @@ def build_hybrid_mamba_stack(
+ ) -> tuple[HostPoolGroup, HybridCacheController]:
+     transfer_layer_num = len(full_layer_mapping | mamba_layer_mapping)
+     mamba_allocator = params.req_to_token_pool.mamba_allocator
++    qsa_draft_pools = params.mtp_draft_device_pools if qsa_pool is not None else ()
+     mtp_draft_device_pools = tuple(
+         pool.full_kv_pool for pool in params.mtp_draft_device_pools
+     )
+@@ -698,6 +701,17 @@ def build_hybrid_mamba_stack(
+         kv_host_size, mamba_host_size = _split_hicache_size(
+             server_args.hicache_size, (kv_pool, mamba_pool)
+         )
++    if qsa_pool is not None and kv_host_size is not None:
++        # The INDEXER host tier rides the same host-size budget as the KV
++        # tier: shrink the KV slice proportionally so KV + INDEXER together
++        # still fit the configured --hicache-size (upstream #39893).
++        kv_bytes = sum(kv_pool.get_kv_size_bytes())
++        index_bytes = sum(
++            b.nbytes
++            for pool in (qsa_pool, *qsa_draft_pools)
++            for b in pool.qsa_compressed_k_buffer_pool
++        )
++        kv_host_size *= kv_bytes / (kv_bytes + index_bytes)
+     kv_host_pool = build_kv_host_pool(
+         kv_pool=kv_pool,
+         page_size=params.page_size,
+@@ -706,6 +720,11 @@ def build_hybrid_mamba_stack(
+         host_size=kv_host_size,
+         mtp_draft_device_pools=mtp_draft_device_pools,
+     )
++    # QSA INDEXER host pool packs the target's compressed-key layers first,
++    # then the draft's; its draft host-layer indices differ from the KV
++    # anchor's (which packs full_kv_pool drafts), so keep the pre-extension
++    # mapping and extend it separately for the INDEXER entry.
++    qsa_layer_mapping = dict(full_layer_mapping)
+     if mtp_draft_device_pools:
+         full_layer_mapping = _with_mtp_layer_mapping(
+             full_layer_mapping,
+@@ -741,6 +760,33 @@ def build_hybrid_mamba_stack(
+             device_free_fn=mamba_allocator.free,
+         ),
+     ]
++    if qsa_pool is not None:
++        # upstream #39893: mirror the QSA compressed index keys into the host
++        # tier so a restored prefix gets its OWN indexer state back. The
++        # sidecar rides the KV pool's indices (see the strategy's sidecars
++        # list). The INDEXER host pool packs target layers first, then the
++        # MTP draft's compressed keys, so its draft host-layer indices differ
++        # from the KV anchor's (which packs full_kv_pool drafts).
++        qsa_layer_mapping = _with_mtp_layer_mapping(
++            qsa_layer_mapping,
++            transfer_layer_start=transfer_layer_num,
++            target_device_layer_num=qsa_pool.full_layer_nums,
++            draft_layer_num=len(qsa_draft_pools),
++        ) if qsa_draft_pools else qsa_layer_mapping
++        entries.append(
++            build_pool_entry(
++                name=PoolName.INDEXER,
++                host_pool=QSAIndexerPoolHost(
++                    qsa_pool,
++                    kv_host_pool,
++                    allocator_type=_get_allocator_type(server_args),
++                    mtp_draft_device_pools=qsa_draft_pools,
++                ),
++                device_pool=qsa_pool,
++                layer_mapping=qsa_layer_mapping,
++                transfer_layer_num=transfer_layer_num + len(qsa_draft_pools),
++            )
++        )
+     host_pool_group = HostPoolGroup(entries)
+     cache_controller = HybridCacheController(
+         params.token_to_kv_pool_allocator,
+@@ -1280,6 +1326,9 @@ class _MambaStrategy(StackStrategy):
+     ):
+         from sglang.srt.mem_cache.base_prefix_cache import EvictParams
+ 
++        from sglang.srt.mem_cache.qsa_kv_pool import QSATokenToKVPool
++
++        qsa_pool = kvcache if isinstance(kvcache, QSATokenToKVPool) else None
+         full_layer_mapping = dict(kvcache.full_attention_layer_id_mapping)
+         mamba_layer_mapping = dict(params.req_to_token_pool.mamba_map)
+         host_pool_group, cache_controller = build_hybrid_mamba_stack(
+@@ -1292,6 +1341,7 @@ class _MambaStrategy(StackStrategy):
+             load_cache_event=load_cache_event,
+             storage_backend=storage_backend,
+             use_mla=kvcache.use_mla,
++            qsa_pool=qsa_pool,
+             host_mamba_evict_fn=lambda n: cache.evict_host(n, ComponentType.MAMBA),
+             device_mamba_evict_fn=lambda n: cache.evict(EvictParams(mamba_num=n)),
+             prefetch_threshold=prefetch_threshold,
+@@ -1306,9 +1356,14 @@ class _MambaStrategy(StackStrategy):
+                 ComponentType.FULL: host_pool_group.get_pool(PoolName.KV),
+                 ComponentType.MAMBA: host_pool_group.get_pool(PoolName.MAMBA),
+             },
++            sidecars=(
++                [SidecarPoolSpec(PoolName.INDEXER, PoolName.KV)]
++                if qsa_pool is not None
++                else []
++            ),
+             register_req_to_token_counter=True,
+             transfer_layer_num=len(full_layer_mapping | mamba_layer_mapping),
+-            pools_desc="KV + MAMBA",
++            pools_desc="KV + MAMBA + INDEXER" if qsa_pool is not None else "KV + MAMBA",
+         )
+ 
+ 
+diff --git a/python/sglang/srt/mem_cache/pool_host/qsa.py b/python/sglang/srt/mem_cache/pool_host/qsa.py
+new file mode 100644
+index 0000000..6ea99c9
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/pool_host/qsa.py
+@@ -0,0 +1,83 @@
++"""Host-tier mirror for QSA compressed index keys (port of upstream #39893).
++
++The QSA indexer keys live in ``QSATokenToKVPool.qsa_compressed_k_buffer_pool``
++which is NOT part of ``full_kv_pool``, so HiCache restores KV + mamba state
++without restoring the indexer state used to select attention blocks. Restored
++prefixes then index into stale compressed keys left by other requests ->
++incoherent attention -> the cross-session hallucination class (see
++hallucination-investigation.md S7/S13).
++
++This host pool mirrors the compressed keys as page rows keyed by full-KV token
++slots, riding the KV sidecar indices (``indices_from_pool=PoolName.KV``).
++Adapted to the fork's ``DeepSeekV4PagedHostPool`` (which has no
++``page_aligned_only`` kwarg; the page-aligned path is exactly what we want,
++and the token-granular DSV4 fallback is never taken because QSA transfers are
++always whole-KV-page).
++"""
++
++from __future__ import annotations
++
++import torch
++
++from sglang.srt.mem_cache.memory_pool_host import DeepSeekV4PagedHostPool
++from sglang.srt.mem_cache.qsa_kv_pool import QSATokenToKVPool
++
++
++class QSAIndexerPoolHost(DeepSeekV4PagedHostPool):
++    """Page-row mirror of QSA compressed keys, indexed by full-KV token slots."""
++
++    def __init__(
++        self,
++        device_pool: QSATokenToKVPool,
++        anchor_host,
++        *,
++        allocator_type: str = "default",
++        mtp_draft_device_pools: tuple[QSATokenToKVPool, ...] = (),
++    ):
++        page_size = anchor_host.page_size
++        ratio = device_pool.qsa_compress_ratio
++        if page_size % ratio:
++            raise ValueError(
++                "QSA HiCache pages must be divisible by the compress ratio"
++            )
++        self.device_pool = device_pool
++        pools = (device_pool, *mtp_draft_device_pools)
++        buffers = [b for pool in pools for b in pool.qsa_compressed_k_buffer_pool]
++        if not buffers:
++            raise ValueError("QSA HiCache requires at least one local indexer layer")
++        item_bytes = buffers[0][0].nbytes * (page_size // ratio)
++        if any(
++            pool.qsa_compress_ratio != ratio
++            or any(
++                b[0].nbytes * (page_size // ratio) != item_bytes
++                for b in pool.qsa_compressed_k_buffer_pool
++            )
++            for pool in pools
++        ):
++            raise ValueError("Packed QSA indexer pools must share the same page shape")
++        # A full-KV page and its compressed groups share ownership. Packing the
++        # groups into a byte row lets the existing whole-page kernels move both
++        # coordinate spaces using the same full-KV page number.
++        # NOTE (fork adaptation): the fork's DeepSeekV4PagedHostPool has no
++        # `page_aligned_only` kwarg; the base class is byte-dtype based and
++        # item_bytes is in BYTES (dtype uint8), same as the upstream PR.
++        super().__init__(
++            pool_name="qsa_indexer",
++            device_buffers=[
++                b.view(torch.uint8).reshape(-1, item_bytes) for b in buffers
++            ],
++            item_bytes=item_bytes,
++            num_host_pages=anchor_host.page_num,
++            slot_page_size=page_size,
++            layout=anchor_host.layout,
++            device=anchor_host.device,
++            pin_memory=anchor_host.pin_memory,
++            allocator_type=allocator_type,
++        )
++        self.size_per_token = self.get_size_per_token()
++
++    def get_size_per_token(self):
++        return self.layer_num * self.item_bytes // self.slot_page_size
++
++    def get_ksize_per_token(self):
++        return self.get_size_per_token()
+diff --git a/python/sglang/srt/mem_cache/qsa_kv_pool.py b/python/sglang/srt/mem_cache/qsa_kv_pool.py
+index e2b63da..ef15a04 100644
+--- a/python/sglang/srt/mem_cache/qsa_kv_pool.py
++++ b/python/sglang/srt/mem_cache/qsa_kv_pool.py
+@@ -208,6 +208,11 @@ class QSATokenToKVPool(HybridLinearKVPool):
+         return self.qsa_rope_position_buffer[loc.long()]
+ 
+     def get_qsa_compressed_k_buffer(self, layer_id: int) -> torch.Tensor:
++        # upstream #39893: the indexer reads compressed keys before attention
++        # reads the full KV. With HiCache restored prefixes, the indexer must
++        # wait for the stage-local layer event before reading its keys, or it
++        # selects attention blocks from in-flight (not yet restored) keys.
++        self._wait_for_layer(layer_id)
+         return self.qsa_compressed_k_buffer_pool[
+             self._transfer_full_attention_id(layer_id)
+         ]

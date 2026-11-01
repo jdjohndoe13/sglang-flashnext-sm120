@@ -25,7 +25,10 @@
 #
 # What to expect in logs/serve.log on a good boot:
 #   "Tree cache initialized: ... impl=UnifiedRadixCache hybrid_ssm=True hicache_attached=True"
-#   "Attached hybrid mamba pool stack ... pools=KV + MAMBA"
+#   "Attached hybrid pool stack to UnifiedRadixCache: pools=KV + MAMBA + INDEXER, ..."
+#     (the + INDEXER requires patch 0014 — the QSA indexer-state mirror,
+#      upstream #39893 ported. Without it the boot prints "pools=KV + MAMBA"
+#      and the 2026-11-01 hallucination class WILL recur under load: §13.)
 #   host-hit metrics appear once evictions start (mamba host hit lengths in request stats).
 #
 # Known upstream caveats at this branch (sgl-project/sglang ~v0.5.19, all OPEN):
