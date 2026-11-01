@@ -501,3 +501,39 @@ envelope, including the worst-case parallel-agent load. The
 "ask about the 6–8-parallel load" reminder (AGENTS.md) is retired.
 Remaining open item: the HICACHE=1 + fences A/B, deferred by the user
 (no deliberate restart of the clean daily boot).
+
+## 12. Proxy-log forensics: the `kirill` incident proven + bench (2026-11-01)
+
+The user supplied the smoking-gun pair (copied to `logs-kirill/`):
+
+- **`1793292095440`** (Oct 29 16:41 UTC, HICACHE=1 boot): the request
+  contains **zero** `kirill` mentions (verified in the full 114 KB
+  request); the response's reasoning contains **6** — foreign paths
+  `C:\Users\kirill\Work\Orca\...` and a `claude` temp path — and the
+  model then emitted a `bash` tool call (`cd /c/Users/kirill/...`)
+  from that contaminated reasoning. The user's tree is
+  `D:\shared\...`; `kirill` is another user's home. This is the
+  cross-session KV-cache leak, proven at the proxy layer: the content
+  was in NO input of that request.
+- **`1793461528682` + 253 more reqs** (Oct 31 15:45–17:26 UTC,
+  HICACHE=0 boot): one session with growing context (first/late
+  requests share a 3000+ char prefix) — the SAME session continuing
+  after the incident, carrying the leaked tool call in its own
+  history. The Oct 31 responses mention kirill only self-referentially
+  ("cd /c/Users/kirill/... — that wasn't even my working directory to
+  begin with, the user rejected it"). Not a new leak; history replay.
+
+Incident shape for the bench: one session, ~100 KB+ context, ~250
+requests over ~100 min of heavy parallel load — the leak burst window.
+
+**Bench:** `scripts/bench/agent_hallucination_bench.mjs` (commit
+`0f758e2`) replays this shape: 8 lanes × 2 chains (main+subagent),
+~30 KB shared prefix (radix-shared + host-tier offloaded), session
+churn (forces prefix reload mid-flight), 100K+ token contexts via
+synthetic tool results, unique per-session canaries (8-hex +
+`/work/<hex>/`) -> `CROSS_SESSION_LEAK` on any cross-lane appearance,
+`UNKNOWN_TOOL` on any undeclared tool name. Smoke-tested 2 lanes ×
+2 min on the live HICACHE=0 boot: 33 reqs, 1.19 M in-tokens, 0 leaks,
+0 unknown tools (4 errors = end-of-run deadline aborts).
+Recommended A/B profile: 8 lanes × 60 min (old leak rate ~0.24/h —
+15 min is only a smoke test).

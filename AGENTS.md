@@ -13,7 +13,9 @@ phantom-folder permission requests reappeared.** Standing question is
 retired; no leakage class has occurred under any load on the HICACHE=0
 boot. Upstream fence patches 0012/0013 (PRs #36738/#36743) are applied
 to the tree — the deferred HICACHE=1 A/B is the only remaining step
-(§10).
+(§10). For the A/B use the bench:
+`node scripts/bench/agent_hallucination_bench.mjs --lanes 8 --duration 60`
+(§12).
 
 ## Cloned Dependency Source
 
