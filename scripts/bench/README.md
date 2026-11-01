@@ -4,6 +4,11 @@
 the HiCache cross-session leakage (see `hallucination-investigation.md`), and
 measures the leak class directly.
 
+Default endpoint `http://192.168.2.208:19999/v1` is the LLM proxy that
+forwards to the sglang server on testcomp2 (`192.168.2.167:1025`), so every
+bench request is also archived under `B:\intersub\temp\llm-proxy\logs\`
+for post-run forensics.
+
 ## What it does
 
 - **8 lanes × 2 chains** (main + subagent) hit `/v1/chat/completions`
