@@ -1,0 +1,73 @@
+From: sgl-project/sglang PR #36738 (merged 2026-08-28, merge commit f611e0c)
+    "[HiCache] Fence load-back behind the forward stream"
+    Adapted to the qwen4-main-squashed fork tree (anchors verified against
+    the sglang-official working tree on 2026-11-01).
+
+Root cause (the class behind the cross-session tool/path leakage measured
+in hallucination-investigation.md): overlap scheduling frees a finished or
+retracted request's KV pages while the round already launched for it is
+still writing them. The HiCache load-back H2D has no ordering against
+those writes: it writes the reallocated pages from the transfer stream,
+so in-flight writes from the earlier round can race the restore and
+corrupt a restored prefix.
+
+Fix: fence the transfer stream behind the forward stream before
+submitting load-back copies. HybridCacheController inherits
+start_loading, so the fence in HiCacheController covers it too.
+
+diff --git a/python/sglang/srt/managers/cache_controller.py b/python/sglang/srt/managers/cache_controller.py
+--- a/python/sglang/srt/managers/cache_controller.py
++++ b/python/sglang/srt/managers/cache_controller.py
+@@ -315,6 +315,9 @@
+         # self.write_queue = PriorityQueue[CacheOperation]()
+         self.load_queue: List[CacheOperation] = []
+         self.write_queue: List[CacheOperation] = []
++        # Set by the scheduler to the forward stream; gates load-back H2D
++        # behind in-flight forwards (see start_loading).
++        self.load_fence_stream = None
+         self.ack_load_queue: List[HiCacheAck] = []
+         self.ack_write_queue: List[HiCacheAck] = []
+ 
+@@ -843,7 +846,15 @@
+         host_indices, device_indices, pool_transfers = self._move_op_indices(op)
+         self.load_queue.clear()
+         producer_event = self.layer_done_counter.events[producer_id]
+         producer_event.start_event.record()
+ 
++        if self.load_fence_stream is not None:
++            # in overlap scheduling, reclaimed pages might still be written by the forward thread
++            # therefore a fence is needed for loading thread to prevent memory corruption
++            # todo: it's possible to use a finer-grained fence
++            self.l2_transfer_engine.host_to_device_stream.wait_stream(
++                self.load_fence_stream
++            )
++
+         completion = self.l2_transfer_engine.submit_host_to_device(
+             self._l2_load_transfers(host_indices, device_indices, pool_transfers),
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -557,6 +557,12 @@
+         self.req_to_token_pool = result.req_to_token_pool
+         self.token_to_kv_pool_allocator = result.token_to_kv_pool_allocator
+         self.disable_radix_cache = result.disable_radix_cache
+         self.tree_cache = result.tree_cache
++        if self.enable_hierarchical_cache:
++            cache_controller = self.tree_cache.cache_controller
++            if cache_controller is not None:
++                cache_controller.load_fence_stream = (
++                    self.tp_worker.model_runner.forward_stream
++                )
+         self.emit_metrics_constants()
+         self.maybe_init_hccl_dp_prewarm()
+diff --git a/test/registered/unit/mem_cache/test_hicache_staged_write_back_dispatch.py b/test/registered/unit/mem_cache/test_hicache_staged_write_back_dispatch.py
+--- a/test/registered/unit/mem_cache/test_hicache_staged_write_back_dispatch.py
++++ b/test/registered/unit/mem_cache/test_hicache_staged_write_back_dispatch.py
+@@ -232,6 +232,7 @@
+         controller._num_tokens_by_pool.return_value = {}
+         controller._transfer_num_bytes.return_value = 0
+         controller.l2_transfer_engine = mock.Mock()
++        controller.load_fence_stream = None
+         completion = SimpleNamespace(
+             start_event=object(), finish_event=object(), timing_enabled=False
+         )

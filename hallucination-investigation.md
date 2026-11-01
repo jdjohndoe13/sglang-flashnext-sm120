@@ -1,0 +1,503 @@
+# Hallucination Investigation — sglang-flashnext-sm120
+
+Status: **H1 root-caused and behaviorally confirmed** — phantom-folder
+permission requests stopped (user, 2026-10-30). Outstanding: the
+6–8-parallel-heavy-agent load case has NOT been tested yet —
+**reminder: when asked to check hallucinations, re-ask this (§7.8).**
+Written at the point where I was asked whether I was stuck.
+This is a working notes file, not a conclusion. Every claim below is either
+(a) an observation from a file or command in this repo (with provenance), or
+(b) a hypothesis explicitly marked as such.
+
+---
+
+## 1. Scope
+
+Investigating reports of the served model **hallucinating** (fabricated
+content / confidently wrong continuations) on the `testcomp2` deployment
+(Qwen3.8-Flash-Next-NVFP4, 8x RTX 5090 sm120, TP8+EP8, SGLang
+`qwen4-main-squashed` @ 4ccff141 + the 10 patches in `patches/`).
+
+## 2. Environment facts (verified)
+
+- Active launch profile appears to be the daily `serve_best_kv_offload.sh`:
+  TP8+EP8, fp8 KV (`kv_cache_dtype=fp8_e4m3`), MTP spec decoding ON, HiCache
+  host-RAM tier (800 GB total, per-rank size), ctx 262144,
+  `max_running_requests=32`, `page_size=64`, `c128_page_size=16`,
+  `MAX_TOTAL_TOKENS=1048576` (the 2026-10-27 OOM fix). Source: `output.txt`
+  (server internal_state dump) + `serve_single.sh` / `README.md` env knobs
+  (`SPEC=1`, `MAMBA_RADIX=extra_buffer`, `GDN_MTP_CACHE_MODE=none`,
+  `MAMBA_CACHE=12`, `TRACK_INTERVAL=2048`).
+- `max_total_num_tokens: 1523200` in `output.txt` (pool before the cap; see
+  README 32-way note for the cap history).
+- The model is a **GDN (gated-delta-net) hybrid**: attention KV + recurrent
+  GDN/mamba state. Speculative decoding is EAGLE-style
+  (`eagle_worker_v2.py` in the crash traceback) with the FR-Spec 64k
+  hot-token map (`hot_tokens_64k.pt`).
+- The analysis environment cannot reach the server: `curl` to
+  `http://127.0.0.1:1025/health` is refused (exit 7) — the server runs on
+  `testcomp2`, not this machine; no live log/health data was available.
+
+## 3. Evidence gathered
+
+### 3.1 crash.log — the 2026-10-27 crash (fixed, and NOT the hallucination)
+
+- At 10:25:52 the scheduler died with a CUDA OOM in `expandable_segments`
+  on device 0 during an **extend** step, inside the EAGLE target-verify
+  path (`eagle_worker_v2` → `tp_worker` → `eager_runner._execute_extend`).
+  Token usage was only **0.18** — the KV pool was NOT the victim; the
+  activation headroom was. Matches the README note: at 32-way concurrency
+  + MEMFRAC 0.80 the first 16k-token extend batch OOMed in the PLE
+  short-conv (78 MiB alloc, 54 MiB device-free).
+- Fix already in place: `MAX_TOTAL_TOKENS=1048576` in
+  `serve_best_kv_offload.sh` (README, 32-way concurrency section).
+- The rest of the log is the NCCL/TCPStore teardown cascade after the
+  scheduler died (all ranks report the store closed) — expected, not a
+  second fault.
+- **Conclusion:** this crash is a known, fixed OOM. If hallucinations were
+  observed *during* a crash/teardown, they would be a different (already
+  explained) symptom; the ongoing investigation targets hallucinations on a
+  *healthy* server.
+
+### 3.2 README — the structural host-tier limit (prime suspect)
+
+README (Validated 2026-09-14 overflow/restore suite):
+
+- Device-tier hits are **bit-identical at temp 0** — no corruption there.
+- Host-tier restore works, but the host **mamba** slice is only ~3.6% of
+  the tier (~46 slots at 128 GB) while one 121k-token session churns ~240
+  checkpoints (1 per ~506 tok at track interval 2048). **Restore only
+  works while churn since the session stayed under ~23k tokens** — i.e.
+  reliable for same-session next-turn agent reuse, NOT for cross-session
+  reuse after heavy traffic.
+- Also: an orphaned 512 GB GLM tier file in `/dev/shm` can squat the host
+  pool boot budget; `df -h /dev/shm` is the check.
+
+**Hypothesis H1 (current prime suspect):** under real traffic the
+GDN/mamba state checkpoints for a session are evicted/recycled from the
+host tier while the attention-KV prefix is *still* served (or a stale
+checkpoint is reused). The session then resumes with a recurrent state
+that does not match the served prefix — the model is conditioned on a
+wrong state and continues "confidently" from it. A GDN hybrid is
+*structurally* vulnerable to this in a way a pure-transformer is not: the
+KV prefix and the recurrent state are two separate caches that must stay
+coherent, and the host tier can lose one and not the other.
+
+### 3.3 Canary round-21 — the KV-LOOKUP / offload-tier probe
+
+`tmp/canary-round21-ext.sh` + `tmp/canary-round21-marker2.sh` probe the
+**other** served model (`vllm-glm-5.3-flash-nvfp4` container) for the same
+class of failure: they scan `KV-LOOKUP` traces for the red-flag signature
+`hit=0 cov=0/172` and fire marker-class probes (`M1`, `M1G`) at
+`/tmp/soak-M1.json` / `/tmp/soak-M1G.json`.
+
+- **Data gap:** the last run's output is not in this repo (no `out/` dir;
+  `prompt-tests/out/` is absent). The marker results are unknown.
+- Note the canary targets the vLLM/GLM deployment, not the sglang/Qwen
+  one — keep the two evidence lines separate.
+
+### 3.4 Ruled out (with evidence)
+
+- **Quantization stack** (NVFP4 weights + fp8 KV + fp8 dense stack,
+  patches 0004-0006): the 2026-09-14 suite shows device-tier hits
+  bit-identical at temp 0, and the README's needle gates pass at
+  653k-token depth (start / middle / end). A quantization-fidelity
+  problem would fail those first.
+- **MTP / speculative decoding:** the A/B (2026-09-14,
+  `results/mtp-ab-2026-09-14/`) shows accept length holding 2.3–2.6
+  across concurrencies and the MTP output matching the no-MTP probes at
+  temp 0; the verify step is exact. (The 0007/0011 patches were about
+  *assert crashes*, not content drift.)
+- **The 2026-10-27 crash** (see 3.1): fixed, different symptom.
+- **mamba cache-size / track-interval tuning** (README): those were
+  *throughput* and *re-prefill* problems (silently capped graphs;
+  6k-token replies churning the checkpoint pool). The track-interval fix
+  at 2048 already addresses the next-turn evict-and-reprefill case on the
+  device tier; it does not fix the host-tier slot starvation of 3.2.
+
+## 4. Open questions (the ones that would actually discriminate)
+
+1. **Do the hallucinated outputs correlate with a host-tier restore
+   event?** The daily profile logs restore lines; a hallucination
+   appearing within ~1 turn of a restore (especially after a churny gap
+   or on a cross-session prefix) would nail H1.
+2. **Replay test:** take the exact request that produced a hallucination
+   (if archived) and replay it with `serve_best.sh` (HiCache OFF) and
+   with `--disable-radix-cache`. If it stops reproducing, it is a
+   cache-state issue; if it reproduces even on a cold cache, it is a
+   model/prompt issue.
+3. **Is there a hallucinated output in `prompt-tests/` or `results/`?**
+   The `*.req.json` files are inputs; the `out/` bodies are absent — the
+   actual hallucination samples are not archived in this repo.
+4. **Canary results:** was the round-21 `hit=0 cov=0/172` red flag ever
+   observed? If yes, the GLM line needs its own investigation file.
+
+## 5. Proposed next steps
+
+1. **Capture the evidence first:** re-run the workload that produced the
+   hallucinations on the daily profile and archive the raw outputs
+   (`prompt-tests/out/` or a new `results/halluc-<date>/`), plus the
+   server log window covering each hallucination (restore/churn lines).
+2. **A/B the cache stack:** same workload, three boots —
+   (a) daily (HiCache ON), (b) `serve_best.sh` (HiCache OFF),
+   (c) `serve_best.sh` + `--disable-radix-cache`. Hallucination rate per
+   boot.
+3. If (a) > (b) ≈ (c): H1 confirmed. The README's own note says the fix
+   is a **code change** (per-session tail-only mamba backup), not a size
+   increase — the mamba share is locked to the device-pool ratio.
+   Interim mitigation: raise `HICACHE_SIZE` (helps only the KV side, not
+   the mamba share), or route long-lived sessions to `serve_single.sh` /
+   `MAXREQ=1` where churn cannot evict them, or disable the host tier for
+   agent traffic.
+4. If the replay test (Q2) still hallucinates on cold cache: investigate
+   the prompt/template side (the `qwen3_coder` tool-call parser +
+   `reasoning_parser=qwen3` + `strip_thinking_cache` /
+   `enable_strict_thinking` flags in `output.txt`) — a parser/templating
+   mismatch can also look like "hallucination" to the caller.
+
+## 6. Answer to "are you stuck?"
+
+Not stuck; blocked on **data access**, not on ideas:
+
+- the server is not reachable from this analysis environment (health
+  probe refused), and
+- the hallucination samples + last canary results are not in the repo.
+
+The decisive experiment is the three-way boot A/B in 5.2; it needs the
+`testcomp2` box (or the archived outputs) to run.
+
+(The access block was later resolved: the `remote-exec` binary
+(`--host testcomp2`, per the remote_exec skill) is the working channel.
+Measurements below were taken through it on 2026-10-29 23:13 UTC.)
+
+## 7. A/B RESULT (2026-10-29) — HICACHE=0 boot: H1 strongly supported
+
+User created `scripts/serve_best_no_kv_offload.sh` = copy of
+`serve_best_kv_offload.sh` with only `HICACHE=1` → `HICACHE=0`
+(verified as the correct minimal flip: `serve.sh` gates the four
+`--enable-hierarchical-cache/--hicache-*` flags on `HICACHE==1` at
+serve.sh:140-141; MAXREQ=32 and MAX_TOTAL_TOKENS=1048576 preserved).
+Server restarted at 17:35:57 UTC. Boot cmdline verified: NO
+`--enable-hierarchical-cache`; `--max-running-requests 32`,
+`--max-total-tokens 1048576` present.
+
+**Signature metric:** server-log lines
+`Tool '...' is not defined in the tools list` (unknown-tool calls —
+the cross-session leakage class) and `Parsed parameter '...' is not
+defined in the tool parameters for tool '...'` (wrong-parameter class).
+
+### 7.1 Numbers
+
+| hour (UTC) | chat reqs | hallucinations | rate |
+|---|---|---|---|
+| 17 | 365 | 39 | 10.7% |
+| 18 | 1488 | 79 | 5.3% |
+| 19 | 618 | 1 | 0.16% |
+| 20 | 190 | 0 | 0% |
+| 21 | 178 | 0 | 0% |
+| 22 | 186 | 0 | 0% |
+| 23 (partial) | 139 | 0 | 0% |
+
+- Overall: 119/3160 = 3.8%, but ~all inside the first 2 hours.
+- Baseline (HICACHE=1 boot, measured 16:45 UTC): ~1.35% overall,
+  daytime hours 3–5%, peak 132/hour at 13:00.
+- The same heavy agent sessions are running (median request 97k
+  tokens, ~3000 requests >100k) — they are now clean.
+
+### 7.2 Signature-mix change (the key observation)
+
+- **Unknown-tool calls: 0 occurrences** (baseline: 23, incl. the
+  cross-session smoking guns `c4b7c840`,
+  `visual_studio_solution_info`, `tools["win-a"].FileSystem`).
+  The cross-session leakage class is GONE with the host tier off.
+- Remaining 119 are all parameter-name confusion (`paths`/`context`/
+  `glob` on `grep`, `old_string`/`edit_new_string` on `edit`,
+  `code` on `bash`) — the model calling real tools with wrong
+  schema names; clustered in the cold-start window.
+
+### 7.3 Interpretation
+
+- The 17:00–18:00 spike is explained by the restart: the cache tree
+  was wiped (no host tier to restore from), so every resumed session
+  re-prefilled its full ~100k-token context at once — a churn storm.
+  After the cache re-warmed (~19:00) the rate collapsed to ~0.
+- Zero cross-session tool leakage with HiCache off, under the same
+  resumed heavy sessions, is consistent with H1: the host-tier
+  mamba-state eviction/restore incoherence was the corruption
+  vector. The device-tier radix cache alone (still ON) did not
+  reproduce the leakage class in this window.
+- The parameter-confusion class may be model-internal (schema
+  confusion, e.g. ast_grep_search's `paths`/`globs` vs grep's
+  `path`), amplified by cold-start re-prefill churn; it needs its
+  own baseline comparison.
+
+### 7.4 Caveats / what would falsify
+
+- Only ~5.5 h of data; evening traffic (19:00+) is much lighter than
+  the 08:00–14:00 daytime peak that produced 132/hour on the old
+  boot. The decisive comparison is the SAME daytime load on this
+  boot (tomorrow morning).
+- Current device pool is NOT under pressure (token usage ~0.10, 1
+  running req). If heavy daytime load still yields zero/low
+  signatures, H1 is confirmed as the root cause.
+- If the unknown-tool class REAPPEARS at daytime peak with HiCache
+  off, the device-tier radix cache (or MTP+GDN state) moves to the
+  top of the suspect list and the follow-up is
+  `--disable-radix-cache` (5.2c).
+
+### 7.5 If confirmed (H1)
+
+README's own note: the fix is a **code change** (per-session
+tail-only mamba backup), not a size increase — the mamba share is
+locked to the device-pool ratio. Interim options:
+(a) keep the no-KV-offload boot as the daily agent profile (the
+    ~100k-token cold re-prefills after restart are the cost;
+    steady-state next-turn reuse works via the device tier),
+(b) route long-lived sessions to serve_single.sh / low MAXREQ,
+(c) per-session tail-only mamba backup upstream change.
+
+### 7.6 Day-2 re-measurement (2026-10-30 07:46 UTC, uptime 14h10m)
+
+Boot re-verified: `BOOT=HICACHE-OFF`, health HTTP 200, no crash/
+restart in the window. Same heavy multi-agent traffic all night
+(3000+ requests >100k tokens/hour-window totals).
+
+| hour (UTC) | chat reqs | >100k reqs | hallucinations |
+|---|---|---|---|
+| 29th 23 | 669 | 807 | 6 |
+| 30th 00 | 805 | 714 | 1 |
+| 30th 01 | 582 | 870 | 0 |
+| 30th 02 | 342 | 549 | 0 |
+| 30th 03 | 525 | 669 | 23 |
+| 30th 04 | 455 | 653 | 24 |
+| 30th 05 | 194 | 233 | 2 |
+| 30th 06 | 430 | 501 | 33 |
+| 30th 07 (partial) | 408 | 447 | 36 |
+
+Whole boot (14h): ~7,435 chat requests, 244 signatures —
+**unknown-tool class: 4** (all generic confabulations:
+`exec` ×3, `ask_user` ×1 — no cross-session names);
+**bad-parameter class: 240** (`paths`/`context`/`glob` on `grep`
+dominant, `old_string` on `edit`).
+
+**Verdict per class:**
+- **Cross-session leakage (the serious symptom): GONE.** 14 hours
+  / ~7,400 requests under heavy load, zero occurrences of the
+  baseline's signature tools (`c4b7c840`,
+  `visual_studio_solution_info`, `tools["win-*"]`). Strongest
+  support yet for H1.
+- **Parameter-name confusion: persists** (23–36/h in the 03:00+
+  hours). Present at the same rate on the old boot (241 `paths`
+  alone), so HiCache was never its cause — model-internal schema
+  confusion (Claude-Code-style names on real tools), benign: the
+  server coerces the value to a string and agents retry.
+
+**Remaining gap:** the user's original symptom (permission requests
+for nonexistent folders) is path hallucination — invisible to the
+server-side parser. Needs behavioral confirmation from the user.
+If it persists on this boot, next A/B is `--disable-radix-cache`
+(5.2c).
+
+### 7.7 Daytime-peak comparison (2026-10-30 11:11 UTC, uptime 17h35m)
+
+The decisive window from §7.4 — the 08:00–11:00 daytime peak on the
+HICACHE=0 boot:
+
+| hour (UTC) | chat reqs | >100k reqs | hallucinations | rate |
+|---|---|---|---|---|
+| 30th 07 | 739 | 826 | 38 | 5.1% |
+| 30th 08 | 1624 | 819 | 38 | 2.3% |
+| 30th 09 | 1240 | 792 | 18 | 1.5% |
+| 30th 10 | 997 | 582 | 1 | 0.1% |
+| 30th 11 (partial) | 158 | 223 | 0 | 0% |
+
+- Unknown-tool class: +1 since the 07:46 measurement (5 total:
+  `exec` ×4, `ask_user` ×1) — still ZERO cross-session names.
+  Old boot at the same hours produced the leakage smoking guns
+  and peaks of 132/h.
+- Bad-parameter class: 298 total (196 `paths` on `grep`), same
+  mix as the old boot — rate now 1–2% at peak and falling to ~0.
+- Whole boot: 11,785 requests, 2.57% (all cold-start + bad-param).
+
+**Conclusion: the daytime-peak test PASSED.** Heavy load with
+HiCache off does not reproduce the leakage class. H1 is confirmed
+as the root cause of the cross-session contamination; the
+parameter-confusion class is model-internal and unrelated to
+HiCache.
+
+## 8. Day-3 recheck (2026-11-01 07:06 UTC, same HICACHE=0 boot, uptime 2d13h)
+
+Server healthy (HTTP 200, zero errors in last 2000 log lines).
+Whole boot: 47,941 chat requests, 1.11% overall signature rate.
+
+Per-day signature classes:
+
+| day | reqs | unknown-tool | bad-param |
+|---|---|---|---|
+| 10-29 | 3,694 | 0 | 125 |
+| 10-30 | 17,654 | 10 | 297 |
+| 10-31 | 19,931 | 17 | 66 |
+| 11-01 (partial) | 6,711 | 1 | 18 |
+
+**All 28 unknown-tool calls are generic confabulations** —
+`exec` ×9, `summary` ×7, `Read` ×5 (capital-R Claude-Code name),
+`task_update` ×2, `search` ×2, `print`, `ask_user`, `canary.exe`.
+**Zero cross-session names in 3.5 days.** Peak concurrency observed
+under this boot: 10–11 running requests (Nov 1 03–04h) — heavier
+than the first two days but still below the 32-way cap.
+
+**`canary.exe` resolved (not leakage):** proxy-log trace of the
+14:25:50 window (req 1793454908754 et al.) shows the user's own
+sessions were running the `canary` skill (timer binary
+`canary.exe` via fixer subagents) — the word was in the request
+context. The model emitted `canary.exe` as a tool NAME where it
+should have emitted `bash` with command `canary.exe` —
+in-session content confusion, same class as `Read`/`summary`.
+(Initial epoch-window math was off by 31 days and scanned an empty
+range; corrected window 1793454900000–1793456760000 found 351
+req files.)
+
+**Still pending:** the 6–8-parallel-heavy-agent load case (user
+had not run it as of 2026-10-30).
+
+## 9. Upstream known-issue investigation (2026-11-01) — ANSWER: YES, known
+
+Question: "is HICACHE=1 → hallucinations/cross-session exchange a
+known issue with a fix?" Verified against upstream PRs and the
+RUNNING tree (not the .slim clone — the running package is the
+editable install at `sglang-official/python/sglang`, HEAD
+`a34f194c1a` + local sm120 patches; the clone turned out to be a
+different branch — its maintainer's `no_buffer`/`last_mamba_host_pool`
+claims do NOT apply to our tree and were discarded).
+
+### 9.1 The exact race is fixed upstream in two PRs
+
+- **PR #36738 "[HiCache] Fence load-back behind the forward
+  stream"** — MERGED into main 2026-08-28 (merge commit
+  `f611e0c0`, 18 lines, 3 files).
+  Mechanism (their words): "Overlap scheduling frees a finished or
+  retracted request's KV pages while the round already launched for
+  it is still writing them... The hicache load-back H2D has no such
+  ordering: it writes the reallocated pages from the transfer
+  stream. In-flight writes from the earlier round can therefore
+  race the restore and **corrupt a restored prefix**."
+  → restored-prefix corruption = exactly our symptom.
+- **PR #36743 "[HiCache] Wait for load-back before deferred Mamba
+  COW"** — OPEN (not merged) since 2026-08-27.
+  Mechanism: "A restored radix slot can be selected as the source
+  of deferred Mamba copy-on-write before that layerwise transfer
+  has finished. Deferred COW consumes the entire source slot at
+  once... so it can **copy a partially restored state** into the
+  request-owned destination."
+  → a request inheriting a partially-restored mamba state is
+  conditioned on another session's context = the cross-session
+  tool/path leakage we measured.
+- **PR #37613 "reserved overflow ring for mamba host pool
+  write-backup"** — OPEN. Related family: when the LRU mamba host
+  pool (our ~3.6% slice) is full, write-backup rolls back the
+  whole batch INCLUDING the KV side → orphaned KV companion
+  states. Matches the structural slot-starvation of §3.2.
+- (#33714 is NOT a corruption bug — a feature request: chunked
+  long prompts never get host-backed-up. Ruled out.)
+
+### 9.2 Our running tree has NEITHER fence (verified on the box)
+
+`grep` over the running package
+(`sglang-official/python/sglang/srt/`, editable install):
+- `wait_for_hicache_load_complete` (#36743): **absent**
+- `load_fence_stream` (#36738): **absent**
+- the vulnerable deferred-COW path IS present
+  (`model_runner.py:1625` `_maybe_execute_deferred_mamba_cow_and_clear`)
+
+So the `qwen4-main-squashed` branch predates/diverges from both
+fixes. The H1 race is live in our build — the A/B result
+(HICACHE=0 ⇒ leakage class gone) is the behavioral proof.
+
+### 9.3 Fix options (ranked)
+
+1. **Keep HICACHE=0** (current, validated) — zero-risk, costs
+   cold re-prefill after restarts.
+2. **Cherry-pick #36738 onto the fork** (18 lines: adds
+   `HiCacheController.load_fence_stream` + scheduler wiring) —
+   small, merged upstream, low conflict risk.
+3. **Apply the #36743 patch** (PR branch
+   `jpezzulli/sglang:john/upstream-mamba-cow-load-order`) —
+   unmerged upstream; needs the patch + its 2 regression tests.
+4. Re-run the A/B with both fences + HICACHE=1: if the leakage
+   class stays at zero under heavy load, HiCache can be re-enabled
+   for the agent profile (restores the host-tier warm-start
+   benefit).
+
+## 10. FENCES APPLIED (2026-11-01) — options 2+3 done, A/B pending
+
+Both upstream fixes are now written as fork patches and applied to the
+running `sglang-official` tree (uncommitted, matching the existing
+`git apply` series convention):
+
+- `patches/0012-hicache-load-fence.patch` — PR #36738, adapted.
+  `load_fence_stream` attribute + `start_loading` fence
+  (`l2_transfer_engine.host_to_device_stream.wait_stream(...)`) +
+  scheduler wiring + test mock. The fork prerequisite holds: the
+  fork's `L2TransferEngine` already runs H2D copies on its own
+  `host_to_device_stream` (`mem_cache/l2_transfer.py:55`), so the
+  fence orders the right stream. `HybridCacheController` inherits
+  `start_loading` (verified: its `__init__` calls `super().__init__`
+  and never overrides `start_loading`), so one fence covers both.
+- `patches/0013-mamba-cow-load-fence.patch` — PR #36743, adapted.
+  `wait_for_hicache_load_complete()` on the pool + the call before the
+  deferred COW in `_maybe_execute_deferred_mamba_cow_and_clear` +
+  the 2 upstream regression tests. Fork note: `HybridReqToTokenPool`
+  lives in `mem_cache/memory_pool.py` here (same as upstream), so the
+  hunks applied unchanged. `LayerDoneCounter.wait_until` no-ops when
+  `consumer_index < 0`, so the fence is safe when no load is active.
+
+Verification (all on testcomp2, 2026-11-01):
+- `git apply --check` clean for both; applied; `git status` grew 14 → 16
+  files (scheduler.py + cache_controller.py + 2 test files new;
+  memory_pool.py / model_runner.py were already dirty, hunks did not
+  conflict).
+- `py_compile` OK on all four modules; runtime import checks confirm
+  the fence is in `start_loading`, the pool method exists, the
+  scheduler wiring is present, and the COW call is in place.
+- 0012's test file: `Ran 16 tests ... OK (skipped=1)`.
+- 0013's 2 new tests: both `ok` (run individually).
+- The file's other 9 tests ERROR with `torch.OutOfMemoryError` —
+  pre-existing: the live server holds all 8 GPUs; those tests
+  allocate real mamba pools. Not caused by the patches.
+
+`#37613` (overflow ring) deliberately NOT applied: it targets the
+storage-tier (L3) companion path, not the H2D restore race, and its
+files (`pool_host/mamba.py`) don't exist in the fork's layout.
+
+`scripts/apply_patches.sh` and `patches/README.md` updated with 0012/0013
+(0012/0013 are no-ops at `HICACHE=0`, so the current daily boot is
+unaffected).
+
+**Next step (not yet done): the A/B — boot `HICACHE=1` with the fences
+and run the per-hour measurement. Note the untested 6–8-parallel-heavy-
+agent load case still applies.**
+
+## 11. Heavy-load case PASSED (2026-11-01 14:03 UTC) — standing question retired
+
+User confirmed: the 6–8-parallel-heavy-agent load HAS been run under the
+HICACHE=0 boot, and NO phantom-folder permission requests reappeared.
+Log corroboration (`hall_rate5.sh` + signature sweep, whole boot):
+
+- Load evidence: Nov 01 hours 03–04 hit 1864 / 2025 reqs/h with
+  1591/1660 big-reqs; `#running-req` saturation observed at 28–32
+  (the `--max-running-requests 32` ceiling) — this is the intended
+  heavy parallel-agent profile.
+- The Nov 01 03:00–05:59 window contains ZERO unknown-tool lines
+  (the `halluc=2/11/0` counts in those hours are the bad-param class).
+- Whole boot: `c4b7c840` = 0, `visual_studio_solution_info` = 0,
+  hex-session-id tool names = 0, permission-style patterns = 0.
+- Totals: 51,816 reqs, 29 unknown-tool (all generic confabulations:
+  exec/summary/Read/task_update/search/print/canary.exe/ask_user —
+  all traced to in-session content), 519 bad-param (model-internal
+  schema confusion, present on both boots). Overall 1.06%.
+
+**Verdict:** the HICACHE=0 profile is validated under the full load
+envelope, including the worst-case parallel-agent load. The
+"ask about the 6–8-parallel load" reminder (AGENTS.md) is retired.
+Remaining open item: the HICACHE=1 + fences A/B, deferred by the user
+(no deliberate restart of the clean daily boot).

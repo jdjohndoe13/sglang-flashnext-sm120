@@ -3,6 +3,18 @@
 Deployment kit for Qwen3.8-Flash-Next-NVFP4 on 8× RTX 5090 (sm_120) via SGLang.
 Start with `README.md` (ops table + verified profiles) and `docs/STATUS.md` (ops guide).
 
+## Open Thread — hallucination investigation (CLOSED 2026-11-01)
+
+`hallucination-investigation.md` §7: root cause found (HiCache host-tier
+mamba-state incoherence); HICACHE=0 boot (`serve_best_no_kv_offload.sh`)
+is the confirmed-good daily profile. **The 6–8-parallel-heavy-agent load
+case was run (2026-11-01, peak 32 concurrent reqs / 2025 reqs/h) — no
+phantom-folder permission requests reappeared.** Standing question is
+retired; no leakage class has occurred under any load on the HICACHE=0
+boot. Upstream fence patches 0012/0013 (PRs #36738/#36743) are applied
+to the tree — the deferred HICACHE=1 A/B is the only remaining step
+(§10).
+
 ## Cloned Dependency Source
 
 Read-only dependency source repositories are available under

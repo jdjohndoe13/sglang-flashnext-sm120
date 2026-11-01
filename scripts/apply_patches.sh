@@ -26,6 +26,13 @@
 #   0008  Multi-alias --served-model-name ("a,b" -> /v1/models lists both)  [git apply]
 #   0009  Tolerant tool schemas: drop malformed "required" before validation [git apply]
 #         (some client frameworks emit "required": {} -> 400 "invalid 'parameters'")
+#   0012  HiCache load-back fence behind the forward stream [git apply]
+#         (upstream #36738, adapted: overlap-scheduling writes can race the H2D
+#          restore and corrupt restored prefixes -> cross-session context leakage;
+#          REQUIRED before re-enabling HICACHE=1)
+#   0013  Deferred mamba COW waits for the final HiCache layer [git apply]
+#         (upstream #36743, adapted: whole-slot COW can copy partial restored
+#          mamba state; companion to 0012, also required before HICACHE=1)
 set -euo pipefail
 # Locate the repo root (script normally lives at <repo>/scripts/). If run in an exotic way
 # (stdin/`bash -s`), fall back to cwd when it looks like the repo root, else fail loudly.
@@ -71,6 +78,8 @@ apply_one 0007-eagle-frspec-vocab-parallel-head-gather.patch apply
 apply_one 0011-hot-head-reshard.patch apply
 apply_one 0008-served-model-aliases.patch apply
 apply_one 0009-tolerant-tool-schema-required.patch apply
+apply_one 0012-hicache-load-fence.patch apply
+apply_one 0013-mamba-cow-load-fence.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then
