@@ -537,3 +537,83 @@ synthetic tool results, unique per-session canaries (8-hex +
 0 unknown tools (4 errors = end-of-run deadline aborts).
 Recommended A/B profile: 8 lanes × 60 min (old leak rate ~0.24/h —
 15 min is only a smoke test).
+
+## 13. The A/B result: fences did NOT prevent recurrence (2026-11-01)
+
+The HICACHE=1 + fences boot ran the 60-min bench (19:17:22–20:17:21
+UTC, 8 lanes, 2536 reqs, 165.5 M input tokens). The bench's own
+detector reported **0 cross-session leaks, 0 unknown tools** — but
+that is a false negative: it only detects *verbatim copies of its own
+canaries*. The user's own agentic sessions (through the same proxy,
+same saturated server) hallucinated during the same window:
+
+**Timeline (UTC, all verified against the proxy archive — ground
+truth):**
+
+- 19:46:30 — user: "OK, the benchmark is working. Can you also check
+  whether caching works?" (33 min into the bench). The next two
+  assistant turns are normal (curls `/metrics` on 192.168.2.167).
+- **19:48:09** — first contaminated response (req `1793562489544`):
+  reasoning is coherent ("Let me curl /metrics") but the emitted
+  `bash` tool call targets `http://192.168.10.100:8000/metrics`.
+  The 261,724-byte request contains **0** occurrences of the IP.
+- 19:49:06 — response adds `192.168.10.128`, `/data/launchpad/`,
+  `bench_random.py` — none in the request.
+- 19:50:54 — response adds `C:\Users\user\browser-laptop` — not in
+  the request. User spots it ("what is that browser-laptop folder?").
+- 19:49–19:52 — the user's other sessions emit undeclared tools:
+  `exec`, `mcp__local__exec`, `mcp__local__filesystem_read_file`,
+  `wsh` (4 events, same window).
+- ~20:18 — user restarted the server to the HICACHE=0 daily profile.
+
+**The decisive forensic finding:** a full scan of ALL 185,759 proxy
+archive files (Oct 27–Nov 1, every request and response) shows the
+first occurrence of `192.168.10.100` in the entire archive is the
+victim's 19:48:09 *response* itself. `192.168.10.128`,
+`/data/launchpad/bench_random.py`, `browser-laptop` likewise never
+appear in any request anywhere. Unlike the `kirill` case (a verbatim
+copy of another session's content), this content was **born in the
+response** — it is not another session's text. It is the same
+incoherent-KV-state class as the §7 root cause (mamba-state
+incoherence): the corrupted state makes the model emit plausible
+confabulations (a 192.168.10.x LAN IP, `:8000` the default vLLM
+port, `/data/launchpad/` a plausible bench path) that are coherent
+in intent but false in content.
+
+**Server-side confirmation (watcher):** the watcher (baseline 0 on
+the fresh boot) printed its first `!!! SERVER-SIDE UNKNOWN-TOOL` at
+**19:50:03** (the server-side twin of the proxy's 19:49:29/19:49:43
+`exec`/`mcp__local__exec` calls) and kept alerting through the bench
+window — **25 `not defined in the tools list` hits by 20:15:00**,
+minutes before the restart. Compare: the entire 3.5-day HICACHE=0
+boot accumulated 29 such lines. The HICACHE=1 + fences boot produced
+a full day's worth of the old boot's server-side leak signal in
+under one hour.
+
+**What this means:**
+
+1. The 0012/0013 fences (verified live in the running tree) did NOT
+   prevent the hallucination class under saturated load. The A/B is
+   **negative**: the fences are not sufficient for daily HICACHE=1
+   use. HICACHE=0 (`serve_best_no_kv_offload.sh`) remains the only
+   safe profile.
+2. The bench's canary detector is necessary but not sufficient — it
+   cannot see the incoherence class. A stronger detector for the
+   bench: the synthetic world is fully controlled, so any absolute
+   path, IP, or folder name in a lane's output that is not
+   `/work/<hex>/...` or a declared tool is a NOVEL-CONTENT hit.
+   (Verified: the bench's own outputs contained none of the
+   session's leaked content, and the bench's canaries never appeared
+   in the user's session — no verbatim copy in either direction.)
+3. The contamination window (19:48–19:52) coincides with the bench's
+   saturated load — consistent with the race being load-dependent.
+4. The user's session self-propagated the contamination after the
+   first hit (contaminated turns entered its own history), so the
+   session never recovered — same shape as the Oct 29 `kirill`
+   incident's aftermath.
+
+**Remaining:** the fences' upstream PRs (#36738/#36743) may be
+necessary-but-not-sufficient, or the fork's `extra_buffer`
+mamba-radix-cache strategy may have an additional race the fences
+don't cover. The evidence package (this §13 + the proxy req/resp
+pairs above) is ready to attach to an upstream report.
