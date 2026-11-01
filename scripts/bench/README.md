@@ -27,7 +27,7 @@ measures the leak class directly.
 node scripts/bench/agent_hallucination_bench.mjs --lanes 8 --duration 15
 # from Windows with the server on testcomp2:
 node scripts\bench\agent_hallucination_bench.mjs --lanes 8 --duration 15 ^
-     --base http://192.168.2.167:1025/v1
+     --base http://192.168.2.208:19999/v1
 ```
 
 Events → `bench-run.jsonl` (every request, per-lane), summary →

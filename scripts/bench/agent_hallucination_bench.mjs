@@ -22,7 +22,7 @@
  *
  * Usage:
  *   node agent_hallucination_bench.mjs [--lanes 8] [--duration 15]
- *        [--base http://192.168.2.167:1025/v1] [--model qwen-3.8-flash-next]
+ *        [--base http://192.168.2.208:19999/v1] [--model qwen-3.8-flash-next]
  *        [--out bench-run.jsonl]
  *
  * Env overrides: BASE_URL, MODEL, LANES, DURATION (minutes), OUT.
@@ -37,7 +37,7 @@ function arg(name, dflt) {
   const i = argv.indexOf('--' + name);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt;
 }
-const BASE = arg('base', process.env.BASE_URL || 'http://192.168.2.167:1025/v1');
+const BASE = arg('base', process.env.BASE_URL || 'http://192.168.2.208:19999/v1');
 const MODEL = arg('model', process.env.MODEL || 'qwen-3.8-flash-next');
 const LANES = parseInt(arg('lanes', process.env.LANES || '8'), 10);
 const DURATION_MIN = parseFloat(arg('duration', process.env.DURATION || '15'));
