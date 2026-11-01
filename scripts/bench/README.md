@@ -48,3 +48,28 @@ the race a realistic number of chances.
   work; the old HICACHE=1 boot leaked ~23 under ~4 days of real load.
 - Watch server-side too: `grep -c "not defined in the tools list"
   logs/serve.log` during the run (the server-side twin of the client check).
+
+## Two-terminal setup (the A/B run)
+
+Terminal 1 — the bench (prints `!!!` lines the moment a leak is detected,
+full summary at the end, exit code 1 on any hit):
+
+```bat
+cd /d D:\shared\models\sglang-flashnext-sm120
+node scripts\bench\agent_hallucination_bench.mjs --lanes 8 --duration 60
+```
+
+Terminal 2 — server-side watcher (tails `logs/serve.log` over ssh; baselines
+the pre-existing hit counts on start, then alerts on every NEW hit):
+
+```bat
+powershell -ExecutionPolicy Bypass -File D:\shared\models\sglang-flashnext-sm120\scripts\bench\watch_server_leaks.ps1
+```
+
+A red `!!! SERVER-SIDE UNKNOWN-TOOL` line means the server parsed a tool
+call for a tool that was never declared — the server-side twin of the
+client's `UNKNOWN_TOOL`. Yellow `[i]` bad-param lines are the
+model-internal confabulation class (present on clean boots too);
+informational only.
+
+Both alert **immediately** on detection and summarize at the end.
