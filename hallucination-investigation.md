@@ -727,7 +727,7 @@ unused tier would have been vacuous; this one is not.
 forensically traced through the full proxy archive
 (`B:\intersub\temp\llm-proxy\logs`, window = this boot only):
 
-1. **OS-probe class (~38 lanes×hits, the bulk):** the models correctly
+1. **OS-probe class (70 of 74):** the models correctly
    detect that the bench's canned tool layer ignores arguments ("even a
    `read` of a nonexistent file and a `write` return the same canned
    notes.md payload") and probe it with canonical Linux paths —
@@ -737,19 +737,29 @@ forensically traced through the full proxy archive
    knowledge: each string is **born in the probing lane's own
    reasoning** and never arrives in any request before being born
    there. The same string "born" in many lanes is the same prior
-   firing many times, not a leak.
-2. **Monitor lane (`60b816d1`):** its task text embeds the bench's own
-   hit log, so quoting `/etc/hostname` / `parker` / `morgan` in its
-   traffic is legitimate self-reference (verified: first occurrence is
-   the HIT-log line injected by the bench itself).
+   firing many times, not a leak. (These still fired because the
+   running bench process had loaded the detector before `cbdf71c`;
+   future runs read clean.)
+2. **Two `(`-prefix false positives** (`(/etc/hostname`): the
+   whitelist's value-stripping ran on the old copy; the committed
+   `cbdf71c` strips the `(` and these would not fire.
 3. **Two benign vanilla confabulations** (`/home/parker/projects/
-   auth-service`, `/home/morgan/...`): generic invented usernames,
-   born in the confabulating lane's own response, absent from every
-   request in the archive, self-propagated only inside that lane's own
-   history — no cross-lane arrival. These are ordinary model
-   invention, not the §13 incident class (which was *real*
-   user-specific facts: `192.168.10.100`, `/data/launchpad/`,
-   `browser-laptop` — nothing a base prior could produce).
+   auth-service` at 04:05, `/home/morgan/projects/workspace` at 04:44):
+   generic invented usernames, born in the confabulating lane's own
+   response, absent from every request in the same boot before the
+   event, self-propagated only inside that lane's own history — no
+   cross-lane arrival. Verified the same class predates this boot:
+   `/home/morgan/projects/webapp` was born on the Nov 1 fences-only
+   boot (20:07:10, lane 6fcbce1b), same as casey/pablo/ryans — so
+   invented-username confabulation fires at ~1-2 per 1000 reqs on
+   EVERY boot, in every profile, and is model-level prior noise, not
+   a HiCache signal. (Offline replay with a strict system-message
+   bench filter — which removes my own orchestrator session's
+   contaminated traffic — measured 5/2556 pre-0014 vs 1/1996
+   post-0014: same order, no delta.) The §13 incident class is
+   different: *real* user-specific facts (`192.168.10.100`,
+   `/data/launchpad/`, `browser-laptop`) — nothing a base prior
+   could produce.
 
 **Detector calibration:** the bench's NOVEL_CONTENT regex family
 originally flagged any absolute path outside the synthetic world.
