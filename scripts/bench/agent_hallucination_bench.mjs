@@ -172,18 +172,36 @@ function scanText(text, laneIdx, where, out) {
 // were born in responses, absent from every request in the proxy archive).
 // The canary check alone missed this: it only sees verbatim copies of its
 // own canaries. Novel content is the stronger detector.
+//
+// Whitelist (triaged 2026-11-02): generic single-segment OS paths that the
+// model knows from TRAINING and deliberately probes with when it notices
+// the bench's canned tool layer (/etc/hostname, /proc/1/..., /sys/...,
+// /tmp/...). These are NOT session-specific, so they cannot evidence a
+// cross-session leak — the incident class is always session/site-specific
+// (LAN IPs, drive paths, /data/launchpad/, /home/<user>/, /c/Users/...).
+// The /etc /proc /sys /tmp families are whitelisted; everything else in
+// the list below stays flagged.
+const NOVEL_ALLOW = /^\/(?:etc|proc|sys|tmp|dev|run|bin|sbin|lib|lib64|boot|media|cdrom|snap)(?:\/|$)/;
 const NOVEL_RES = [
   { re: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g, kind: 'ip' },
   { re: /\b[A-Za-z]:\\[^\s"'`)\]]+/g, kind: 'drive_path' },
-  { re: /(?:^|[\s"'(])\/(?:data|home|root|Users|mnt|etc|proc|sys|var|usr|opt|srv)(?!\/agents)\/[^\s"'`)\]]*/g, kind: 'abs_path' },
+  { re: /(?:^|[\s"'(])\/(?:data|home|root|Users|mnt|var|usr|opt|workspace|launchpad|storage)(?:\/|$)[^\s"'`)\]]*/g, kind: 'abs_path' },
   { re: /(?:^|[\s"'(])\/[a-z]\/[A-Za-z][^\s"'`)\]]*/g, kind: 'drive_path' },  // git-bash /c/Users/... (the kirill shape)
 ];
 function scanNovel(text, laneIdx, where, out) {
   if (!text) return;
   for (const { re, kind } of NOVEL_RES) {
     re.lastIndex = 0;
-    const m = re.exec(text);
-    if (m) out.push({ type: 'NOVEL_CONTENT', kind, value: m[0].slice(0, 80), lane: laneIdx, where });
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const val = m[0].replace(/^[\s"'(]/, '').trim();
+      // generic OS paths are model priors, not leaks (see NOVEL_ALLOW)
+      if (kind === 'abs_path' && NOVEL_ALLOW.test(val)) continue;
+      // localhost/loopback IPs are generic priors too (127.0.0.1, 0.0.0.0)
+      if (kind === 'ip' && /^(?:127\.|0\.0\.0\.)/.test(val)) continue;
+      out.push({ type: 'NOVEL_CONTENT', kind, value: val.slice(0, 80), lane: laneIdx, where });
+      break;
+    }
   }
 }
 function scanToolCalls(toolCalls, laneIdx, out) {
