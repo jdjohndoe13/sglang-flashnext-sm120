@@ -48,11 +48,17 @@ the race a realistic number of chances.
 
 ## Profiles
 
-- Current daily boot (HICACHE=0): expect 0 leaks — this is the baseline.
-- HICACHE=1 + fences (after the next boot): expect 0 leaks if the fences
-  work; the old HICACHE=1 boot leaked ~23 under ~4 days of real load.
+- Current daily boot (HICACHE=1 + patch 0014, since 2026-11-02): expect
+  0 leaks — the A/B passed (§15). Boot log must show
+  `pools=KV + MAMBA + INDEXER` on every rank, or the run is invalid.
+- Pre-0014 HICACHE=1 leaked ~23 contamination incidents under ~4 days
+  of real load, and the 60-min bench reproduced the class (server-side
+  unknown-tool lines) even with fences 0012/0013 alone (§13).
 - Watch server-side too: `grep -c "not defined in the tools list"
-  logs/serve.log` during the run (the server-side twin of the client check).
+  logs/serve.log` during the run (the server-side twin of the client
+  check). Note: NOVEL_CONTENT hits on `/etc/`, `/proc/` etc. are
+  whitelisted since `cbdf71c` — models probing the bench's canned tool
+  layer with canonical OS paths are false positives, see §15.
 
 ## Two-terminal setup (the A/B run)
 

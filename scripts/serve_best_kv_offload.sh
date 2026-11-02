@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HiCache PROFILE: serve_best.sh + KV cache offloading to host RAM (800 GB total).
+# HiCache PROFILE: serve_best.sh + KV cache offloading to host RAM (512 GB total).
 # Qwen3.8-Flash-Next NVFP4, 8x RTX 5090 (sm120, 32 GB/card), TP8 + EP8.  DAILY PROFILE.
 #
 # Identical to serve_best.sh except HICACHE=1: sglang's hierarchical cache (HiCache) keeps
@@ -12,13 +12,14 @@
 # on this model lineage (Qwen3-Next / Qwen3.5 hicache suites) and the draft pools have
 # explicit host sidecars.
 #
-# SIZING — --hicache-size is PER RANK: 100 GiB/rank x 8 ranks = 800 GB pinned host RAM
-# total (this script's default). The launcher splits it proportionally between the KV and
+# SIZING — --hicache-size is PER RANK: 64 GiB/rank x 8 ranks = 512 GB pinned host RAM
+# total (this script's default — the size the 2026-11-02 A/B passed with, see
+# hallucination-investigation.md §15). The launcher splits it proportionally between the KV and
 # mamba host pools (KV ~96%, mamba ~3.6% — the mamba slice grows with the tier but stays
 # the binding constraint). Override per-rank size with e.g.:
-#   HICACHE_SIZE=64 ./serve_best_kv_offload.sh    # 512 GB total
+#   HICACHE_SIZE=100 ./serve_best_kv_offload.sh   # 800 GB total
 # The box has ~1 TB RAM; the boot-time check (available - reserve) must pass for the whole
-# tier — 800 is validated, ~100/rank is near the practical ceiling (remember the ~50 GB
+# tier — 800 was validated pre-0014, ~100/rank is near the practical ceiling (remember the ~50 GB
 # PLE pinned table + rank RSS + OS; and check `df -h /dev/shm` for orphaned tier files from
 # other engines before a big boot). No NIXL or other extra deps
 # are needed (nixl is only for L3 storage backends; the host tier uses the kernel IO backend).

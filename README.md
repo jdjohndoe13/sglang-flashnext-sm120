@@ -23,11 +23,11 @@ scripts are re-pointed and re-tuned for this box (32 GB/card, TP8, 1 TB host RAM
 Run (after `git pull` on the machine):
 
 ```bash
-bash scripts/apply_patches.sh   # once per pull: ten sm120 patches into sglang-official (no rebuild)
+bash scripts/apply_patches.sh   # once per pull: the sm120 patches (0001-0014) into sglang-official (no rebuild)
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
-./scripts/serve_best_kv_offload.sh  # DAILY (llmqwen): serve_best + HiCache host tier: 800 GB RAM
-                                 # total (100 GiB/rank x 8; KV + mamba state checkpoints
-                                 # offloaded; HICACHE_SIZE=N to change per-rank)
+./scripts/serve_best_kv_offload.sh  # DAILY (llmqwen): serve_best + HiCache host tier: 512 GB RAM
+                                 # total (64 GiB/rank x 8; KV + mamba state + QSA indexer
+                                 # keys offloaded; HICACHE_SIZE=N to change per-rank)
 ./scripts/serve_best_no_mtp.sh  # serve_best with MTP/spec decoding OFF (A/B done: MTP wins — diagnostic now)
 ./scripts/serve_single.sh       # one huge session: 786432 ctx (YaRN ×3), max KV pool
 ```
@@ -37,13 +37,16 @@ leftover SGLang GPU processes); logs also land in `logs/serve.log`. Use tmux/scr
 want the server to survive a disconnect. There is no systemd unit and no auto-start.
 
 **KV offload to RAM (HiCache):** `serve_best_kv_offload.sh` enables sglang's hierarchical cache —
-a pinned host-RAM tier holding evicted QSA/full-attention KV **and** the GDN/mamba state
-checkpoints. This branch (v0.5.19-era) supports the hybrid-mamba model natively: it routes
-through `UnifiedRadixCache` and attaches a `MambaPoolHost` beside the KV host pool; MTP stays
-on (CI-validated combo upstream). `--hicache-size` is **per rank** (16 GiB x 8 = 128 GB total
+a pinned host-RAM tier holding evicted QSA/full-attention KV, the GDN/mamba state
+checkpoints, **and the QSA indexer compressed keys** (patch 0014; without that mirror,
+restored prefixes re-used another request's indexer keys → cross-session confabulation —
+see hallucination-investigation.md §14). This branch (v0.5.19-era) supports the hybrid-mamba
+model natively: it routes through `UnifiedRadixCache` and attaches a `MambaPoolHost` +
+`QSAIndexerPoolHost` beside the KV host pool; MTP stays
+on (CI-validated combo upstream). `--hicache-size` is **per rank** (64 GiB x 8 = 512 GB total
 here; `HICACHE_SIZE=N` to change), needs no NIXL/extra deps, and co-exists with the existing
 `extra_buffer` + `--mamba-track-interval 2048` + fp8 KV config. Expect `hicache_attached=True`
-in the boot log.
+and `pools=KV + MAMBA + INDEXER` (all 8 ranks) in the boot log.
 
 **Validated 2026-09-14 (overflow/restore suite):** device-tier hits are bit-identical at
 temp 0 (no #36743 corruption); full prompts back up to the host tier (the #33714
@@ -150,7 +153,7 @@ for the draft weights + packed draft layer + target-verify CUDA graphs. Keep MTP
 
 ```
 patches/            ten patches against sgl-project/sglang @ qwen4-main-squashed (see patches/README.md)
-scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_kv_offload.sh (HiCache 800 GB, daily)
+scripts/            serve.sh (knobbed launcher) · serve_best.sh · serve_best_kv_offload.sh (HiCache 512 GB, daily)
                     serve_best_no_mtp.sh (A/B MTP test) · serve_single.sh (786K ctx)
                     apply_patches.sh (idempotent, into sglang-official) · do_build.sh
                     bench_sglang.py · make_hot_tokens.py

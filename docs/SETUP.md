@@ -1,7 +1,7 @@
 # SETUP.md — fresh-install guide (Ubuntu 26.04)
 
 Rebuild the whole deployment on a freshly installed Ubuntu 26.04 box with 8× RTX 5090:
-the **sglang Qwen3.8-Flash-Next server** (host venv, ten sm120 patches, port 1025),
+the **sglang Qwen3.8-Flash-Next server** (host venv, sm120 patch set 0001–0014, port 1025),
 plus the crash-investigation cycle.
 
 Companion docs: `README.md` (what/why + benchmark results), `docs/STATUS.md` (ops +
@@ -80,7 +80,7 @@ git clone <your-repo-url> qwen3.8-flash-next-nvfp4-sglang
 cd qwen3.8-flash-next-nvfp4-sglang
 ```
 
-The repo carries: `patches/` (ten sm120 patches), `scripts/` (`serve.sh`,
+The repo carries: `patches/` (the sm120 patch set, 0001–0014), `scripts/` (`serve.sh`,
 `serve_best.sh`, `serve_single.sh`, `apply_patches.sh`, `do_build.sh`,
 `bench_sglang.py`, `make_hot_tokens.py`, the crash-cycle scripts),
 `docs/` (STATUS/PERF_CEILING/SETUP), `hot_tokens_64k.pt` (the FR-Spec draft-vocab map),
@@ -119,9 +119,11 @@ bash scripts/do_build.sh
 #    = uv pip install -e python with the cu130 wheel index, gcc-13, CUDA_HOME=/usr/local/cuda
 #    -> creates sglang-official/.venv (sglang 0.5.20.dev11, sglang-kernel cu130)
 
-# 3) apply the ten sm120 patches (idempotent; re-run after every git pull):
+# 3) apply the sm120 patches (idempotent; re-run after every git pull):
 bash scripts/apply_patches.sh
-#    0001b+0002+0003+0007+0008+0009+0011 via git apply; 0004-0006 via git am (commits).
+#    0001b+0002+0003+0007+0008+0009+0011+0012+0013+0014 via git apply; 0004-0006 via git am (commits).
+#    0012/0013/0014 are the HiCache-safety patches — REQUIRED before serving with HICACHE=1
+#    (the daily serve_best_kv_offload.sh profile); boot log must show "pools=KV + MAMBA + INDEXER".
 
 # 4) serve (TP8+EP8 is the only 8x32GB configuration; see README for why):
 ./scripts/serve_best.sh      # interactive/agent profile: 262144 ctx, fp8 stack, :1025

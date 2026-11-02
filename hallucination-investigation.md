@@ -1,9 +1,13 @@
 # Hallucination Investigation — sglang-flashnext-sm120
 
-Status: **H1 root-caused and behaviorally confirmed** — phantom-folder
-permission requests stopped (user, 2026-10-30). Outstanding: the
-6–8-parallel-heavy-agent load case has NOT been tested yet —
-**reminder: when asked to check hallucinations, re-ask this (§7.8).**
+Status: **RESOLVED (2026-11-02)** — root cause = the QSA indexer state
+gap (§14); fixed by patch 0014; the HICACHE=1 A/B rerun PASSED (§15)
+and `serve_best_kv_offload.sh` (HICACHE=1) is the daily profile again.
+The heavy-load case passed separately (§11). Post-resolution watch:
+`watch_server_leaks.ps1` stays armed for a few days; any user-specific
+content (real paths/IPs/machine names) in a response = reopen.
+Earlier sections are working notes kept for provenance; §14–§15 supersede
+the conclusions in §7–§13.
 Written at the point where I was asked whether I was stuck.
 This is a working notes file, not a conclusion. Every claim below is either
 (a) an observation from a file or command in this repo (with provenance), or
@@ -694,3 +698,72 @@ current HICACHE=0 boot — no host tier exists). The A/B gate is the
 60-min bench with the NOVEL_CONTENT detector on HICACHE=1 + the
 watcher; the boot must log `pools=KV + MAMBA + INDEXER`. Until that
 passes, **HICACHE=0 remains the only safe profile**.
+
+## 15. A/B VERDICT: PASS — patch 0014 fixes the class (2026-11-02)
+
+The rerun of §13's exact A/B (same bench, same 8 lanes × 60 min, same
+default 64 GiB/rank host tier — only variable: patch 0014 applied).
+
+**Boot gate:** `pools=KV + MAMBA + INDEXER` on all 8 ranks; the
+`qsa_indexer` host pool allocated (5.75 GB/rank × 13 layers). The
+tier was genuinely exercised: device pool saturated (token usage
+0.92–0.99 throughout), and metrics show
+`sglang:cached_tokens_total{cache_source="host"} = 1.4484e+08` —
+144.8M tokens restored from host during the run. A pass with an
+unused tier would have been vacuous; this one is not.
+
+**Bench result** (`bench-run.summary.json`, 2026-11-02 04:50 UTC):
+2963 reqs, 192.5M in-tokens, 1.16M out, 0 errors,
+**0 cross_session_leaks, 0 unknown_tool_calls, 74 novel_content_hits**.
+
+| Signal | §13 (broken, no 0014) | §15 (with 0014) |
+|---|---|---|
+| Server-side unknown-tool lines | 25 by minute 58 | **0** |
+| Bench canary cross-session leaks | (contaminated real users) | **0** |
+| Bench unknown-tool calls | 0 | **0** |
+| NOVEL_CONTENT hits | (detector too weak to fire) | 74 — all triaged false-positive, below |
+
+**The 74 NOVEL_CONTENT hits are all false positives** — every one
+forensically traced through the full proxy archive
+(`B:\intersub\temp\llm-proxy\logs`, window = this boot only):
+
+1. **OS-probe class (~38 lanes×hits, the bulk):** the models correctly
+   detect that the bench's canned tool layer ignores arguments ("even a
+   `read` of a nonexistent file and a `write` return the same canned
+   notes.md payload") and probe it with canonical Linux paths —
+   `/etc/hostname`, `/etc/os-release`, `/proc/self/...` — and
+   deliberately-impossible paths (`/proc/1/nonexistent_xyz`,
+   `/proc/self/root/definitely_missing_dir_8x2`). These are base-model
+   knowledge: each string is **born in the probing lane's own
+   reasoning** and never arrives in any request before being born
+   there. The same string "born" in many lanes is the same prior
+   firing many times, not a leak.
+2. **Monitor lane (`60b816d1`):** its task text embeds the bench's own
+   hit log, so quoting `/etc/hostname` / `parker` / `morgan` in its
+   traffic is legitimate self-reference (verified: first occurrence is
+   the HIT-log line injected by the bench itself).
+3. **Two benign vanilla confabulations** (`/home/parker/projects/
+   auth-service`, `/home/morgan/...`): generic invented usernames,
+   born in the confabulating lane's own response, absent from every
+   request in the archive, self-propagated only inside that lane's own
+   history — no cross-lane arrival. These are ordinary model
+   invention, not the §13 incident class (which was *real*
+   user-specific facts: `192.168.10.100`, `/data/launchpad/`,
+   `browser-laptop` — nothing a base prior could produce).
+
+**Detector calibration:** the bench's NOVEL_CONTENT regex family
+originally flagged any absolute path outside the synthetic world.
+Commit `cbdf71c` whitelists generic single-segment OS paths
+(`/etc`, `/proc`, `/sys`, `/tmp`, loopback IPs) while keeping the
+incident class fully flagged: LAN IPs, drive paths, `/c/Users/...`,
+`/data/`, `/home/<user>/`, `/mnt/`. Future runs should read clean.
+
+**Verdict:** the QSA indexer state gap (§14) was the root cause;
+patch 0014 closes it. **HICACHE=1 (`serve_best_kv_offload.sh`) is
+cleared for the daily profile.** Caveats: (a) the A/B is one 60-min
+synthetic run — the real-usage watcher (`scripts/bench/
+watch_server_leaks.ps1`) stays armed for a few days; (b) patch 0014
+is still uncommitted in the engine tree (kit convention) and the
+upstream PR #39893 is still open — if it merges with different
+mechanics, rebase then; (c) the 2026-11-01 failing boot predates
+0014, so no counter-evidence exists against it.

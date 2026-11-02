@@ -3,22 +3,27 @@
 Deployment kit for Qwen3.8-Flash-Next-NVFP4 on 8× RTX 5090 (sm_120) via SGLang.
 Start with `README.md` (ops table + verified profiles) and `docs/STATUS.md` (ops guide).
 
-## Open Thread — hallucination investigation (ROOT CAUSE FOUND + FIX PATCHED, A/B pending)
+## Open Thread — hallucination investigation (RESOLVED: root cause found, fix proven, A/B PASSED)
 
-`hallucination-investigation.md` §7: root cause found (HiCache host-tier
-mamba-state incoherence); HICACHE=0 boot (`serve_best_no_kv_offload.sh`)
-is the confirmed-good daily profile. The HICACHE=1 + fences A/B (2026-11-01)
-was NEGATIVE — the fences (0012/0013) did NOT prevent the class (§13).
-**§14: the real gap is the QSA indexer state** — `qsa_compressed_k_buffer_pool`
-lives outside `full_kv_pool` and was never mirrored to the host tier, so
-restored prefixes re-used another request's indexer keys → wrong attention
-blocks → confabulation. Ported upstream PR #39893 as **patch 0014**
-(`0014-hicache-qsa-indexer-state.patch`; applied to the live tree, unit-
-validated on-hardware: bit-exact round-trip + fence, negative control
-reproduces the race). **Next step: the A/B rerun** — HICACHE=1 boot with
-0014 (log must show `pools=KV + MAMBA + INDEXER`), 60-min bench
-(`node scripts/bench/agent_hallucination_bench.mjs --lanes 8 --duration 60`)
-+ watcher; until it passes, **HICACHE=0 remains the ONLY safe profile**.
+`hallucination-investigation.md` §14: root cause = the QSA indexer state
+gap (`qsa_compressed_k_buffer_pool` lives outside `full_kv_pool`, never
+mirrored to the host tier → restored prefixes re-used another request's
+indexer keys → wrong attention blocks → confabulation). Fences
+0012/0013 were necessary but not sufficient (§13). Fixed by **patch
+0014** (`0014-hicache-qsa-indexer-state.patch`, port of upstream PR
+#39893; applied to the live tree via `git apply`, in `apply_patches.sh`).
+**§15: the A/B rerun PASSED** (2026-11-02, same 60-min/8-lane bench as
+the failing §13 run): boot gate `pools=KV + MAMBA + INDEXER` on all 8
+ranks, tier exercised (144.8M tokens restored from host), 2963 reqs,
+0 cross-session leaks / 0 unknown-tool calls / 0 server-side unknown-tool
+lines (vs 25 by min 58 on the broken run); all 74 NOVEL_CONTENT hits
+forensically triaged as false positives (canonical OS-path probes +
+benign invented-username confabulations, all born in the lane's own
+reasoning). **`serve_best_kv_offload.sh` (HICACHE=1) is the daily
+profile again.** Watcher (`scripts/bench/watch_server_leaks.ps1`)
+stays armed for a few days; patch 0014 is still uncommitted in the
+engine tree and upstream PR #39893 is still open — rebase if it merges
+with different mechanics.
 
 ## Cloned Dependency Source
 
