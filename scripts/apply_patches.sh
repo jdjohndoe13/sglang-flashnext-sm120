@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the thirteen sm120 patches to ./sglang-official (branch qwen4-main-squashed).
+# Apply the fourteen sm120 patches to ./sglang-official (branch qwen4-main-squashed).
 # IDEMPOTENT: each patch is skipped if already applied (or conflicting) — safe to re-run
 # after every `git pull` of this repo. Editable install => no rebuild needed afterwards.
 #
@@ -40,6 +40,12 @@
 #          request's indexer keys -> wrong attention blocks -> the 2026-11-01
 #          hallucination class that 0012/0013 alone did NOT prevent.
 #          REQUIRED before re-enabling HICACHE=1)
+#   0015  Fused QK RoPE kernel must honor mrope [3,T] positions [git apply]
+#         (upstream #34446/e6355774, adapted: the fused kernel read positions as
+#          1D, so every vision token used only the temporal mrope row -> height/
+#          width positional info discarded -> systematic grounding/click errors
+#          (upstream #35345/#35772/#36762). Fixes misclick accuracy on image
+#          requests; no effect on text-only.)
 set -euo pipefail
 # Locate the repo root (script normally lives at <repo>/scripts/). If run in an exotic way
 # (stdin/`bash -s`), fall back to cwd when it looks like the repo root, else fail loudly.
@@ -88,6 +94,7 @@ apply_one 0009-tolerant-tool-schema-required.patch apply
 apply_one 0012-hicache-load-fence.patch apply
 apply_one 0013-mamba-cow-load-fence.patch apply
 apply_one 0014-hicache-qsa-indexer-state.patch apply
+apply_one 0015-mrope-fused-rope-fix.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then

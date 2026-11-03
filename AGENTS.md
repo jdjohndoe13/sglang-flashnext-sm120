@@ -25,6 +25,21 @@ stays armed for a few days; patch 0014 is still uncommitted in the
 engine tree and upstream PR #39893 is still open — rebase if it merges
 with different mechanics.
 
+## Open Thread — UI misclick / grounding (ROOT CAUSE FOUND: patch 0015, A/B pending restart)
+
+`docs/ui-misclick-research.md`: agents misclicking screenshots is NOT an
+image-resize problem (pipeline proven 1:1 end-to-end — the "vLLM 1.0M
+max_pixels" theory was wrong; the server is SGLang, its cap is 16.7M, and
+`--mm-processor-kwargs` doesn't exist). Root cause = the fused QK-RoPE kernel
+reading M-RoPE `[3,T]` positions as 1D → vision tokens lost height/width
+positioning (upstream #35345/#35772, fixed by #34446). Verified in the live
+tree; **patch 0015** (`0015-mrope-fused-rope-fix.patch`, in `apply_patches.sh`)
+is applied to the tree (uncommitted) and CPU-verified — activates on the next
+server restart. A/B: `node scripts\bench\grounding_ab.mjs` after restart
+(pass = marker centers within a few % + claimed image size ≈ 1622×1018).
+Post-fix: agents should prefer `Snapshot` + `Click(label=N)` (UIA element
+clicking, no pixel estimation) over `Screenshot` + `Click(loc)`.
+
 ## Cloned Dependency Source
 
 Read-only dependency source repositories are available under

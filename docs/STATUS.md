@@ -368,6 +368,10 @@ default → tokens in `delta.reasoning_content`). Or from the laptop: `omega --u
 `0002` fp8-QSA dequant · `0003` sm120 fp32 prefill state · `0001b` RecoverSSM/WY port (+1316) ·
 `086a37f` sm120 Triton low-M GEMM · `284d7fe` fp8 weight-only · `85e7da1` fp8 HC + lm_head.
 Re-apply on a fresh checkout: see patches/README.md + cherry-pick the three commits.
+Later series additions (see patches/README.md for the full table): `0012`/`0013` HiCache
+load fences, `0014` QSA indexer state (the 2026-11 hallucination fix), `0015` fused-QK-RoPE
+M-RoPE fix (the UI misclick fix — see `docs/ui-misclick-research.md`; applied to the tree
+2026-11-03, A/B pending the next restart).
 
 ## Hard-won gotchas
 Desktop crash = full-range graph capture → keep CUDAGRAPH_MAXBS small. RAM thrash = uncapped
