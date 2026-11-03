@@ -38,7 +38,16 @@ is applied to the tree (uncommitted) and CPU-verified — activates on the next
 server restart. A/B: `node scripts\bench\grounding_ab.mjs` after restart
 (pass = marker centers within a few % + claimed image size ≈ 1622×1018).
 Post-fix: agents should prefer `Snapshot` + `Click(label=N)` (UIA element
-clicking, no pixel estimation) over `Screenshot` + `Click(loc)`.
+clicking, no pixel estimation) over `Screenshot` + `Click(loc)`. For
+UIA-opaque targets (canvas/custom-drawn/remote-desktop, no accessible
+elements) the `coords_check_loop` skill (user skills dir) verifies a
+screenshot-measured point before clicking: draws a marker on the VM, the
+model self-corrects via a **direct stateless model call** (no OpenCode
+session — forks leak prompts into the parent, verified 3×, and forks are
+top-level rows so the resume sweep can resurrect them), only `VERIFIED`
+coords get clicked. Fully tested 2026-11-03: converged (1300,600)→
+(100,28) on the VS Save button in 2 iterations with the unpatched
+(biased) model — the loop compensates for the coordinate-system bias.
 
 ## Cloned Dependency Source
 

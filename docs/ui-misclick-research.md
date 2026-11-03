@@ -136,6 +136,59 @@ patch grid).
 
 Ranked for this stack; all require no retraining.
 
+> **Constraint correction (2026-11-03, user-confirmed):** the target UI
+> exposes NO accessibility tree, so items 1–2 below (UIA `Snapshot` +
+> `Click(label)`, SoM via `use_annotation`) are NOT available there —
+> element boxes cannot be generated without UIA (OmniParser would be the
+> only SoM path, and it stays not-worth-it). The usable mitigation for
+> UIA-opaque screens is the **marker-overlay verification loop** —
+> implemented as the `coords_check_loop` skill (see §6a).
+
+### 6a. The coords_check_loop skill (built 2026-11-03)
+
+`~/.config/opencode/skills/coords_check_loop/` — before any
+`Click(loc)` on a UIA-opaque screen, the agent runs the loop script:
+
+1. on the VM: `CopyFromScreen` + GDI+ draws a hollow blue-dashed ring
+   (white outline, crosshair arms) at the requested point — the ring
+   center IS the click point; GetPixel self-checks the draw,
+2. the marked desktop is sent to the model **via a direct stateless
+   `POST /v1/chat/completions` call** (temperature 0, thinking off) and
+   the model is asked **what is at the marker center** (description, not
+   yes/no — avoids sycophancy),
+3. the model answers one JSON line: `confirmed` / `adjust` (corrected
+   coords) / `fail` (target not visible); on `adjust` it re-draws,
+   max 3 iterations,
+4. only `VERIFIED` coords may be clicked; every marked image is saved to
+   `%TEMP%\coords_check\` for forensics.
+
+Why the user's design works: the loop lets the model see the DISCREPANCY
+between its intended target and where its coordinates actually land —
+the systematic-bias error becomes a visible offset the model can walk
+back ("the marker is to the right and below where I meant"). Converged
+end-to-end on win-b with the UNPATCHED (biased) model: (1300,600) →
+(283,27) → (105,27) → VERIFIED on the Visual Studio Save button, 3
+iterations; the consolidated skill script re-verified in 2.
+
+Why NOT a forked OpenCode session (the first design, abandoned same day):
+prompts sent to a fork via `POST /api/session/:id/prompt` are delivered
+to the **PARENT** session as user messages (observed 3×, images included)
+— the exact pollution the fork was meant to prevent. The claim that forks
+are exempt from the boot resume sweep is also wrong: `projector.ts`
+inserts forks with `parent_id: null` (top-level), and the sweep
+(`store.ts` `listSuspended`) requires `parent_id IS NULL`, so a crashed
+fork IS resumable. The judge task is self-contained (image + target
+description), so inherited context adds nothing and a direct call has no
+session state at all — no leak path, nothing to resurrect.
+
+Mechanics (all verified): images ride as `image_url` data-URIs in the
+OpenAI request; VM base64 round-trips losslessly through the MCP
+`PowerShell` tool (400 KB tested); the MCP endpoint needs `initialize`
+before `tools/call`; the VM→host push route is dead (host firewall, no
+elevation); the portable shell scanner splits quoted args at the first
+space and rejects parentheses — pass the target as trailing positional
+args after `--`.
+
 1. **UIA element clicking — biggest win, already built.** windows-mcp
    `Snapshot` (UIA tree; `use_annotation=True` default = Set-of-Mark boxes) +
    `Click(label=N)` → clicks the element's UIA center — zero pixels estimated.
