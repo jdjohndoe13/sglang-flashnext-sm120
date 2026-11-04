@@ -328,6 +328,38 @@ node scripts\bench\grounding_ab.mjs          # x3
 patches/0015-mrope-fused-rope-fix.patch` (re-running `apply_patches.sh`
 re-applies it). Text-only serving is unaffected either way.
 
+### A/B result (2026-11-03 21:02 boot — patch 0015 + MROPE launch fix, boot gate `pools=KV + MAMBA + INDEXER` ✓, 0 MROPE errors)
+
+3 runs (one thrown away: the 800x600 variant is invalid — the script's
+markers are fixed coords and fall outside an 800x600 canvas). The script
+prints per-marker ratios in INPUT order; the model enumerates x-sorted, so
+match by x-order:
+
+| circle (x-order) | truth | reported (2 runs) | ratio |
+|---|---|---|---|
+| 1 | (300, 700) | (433, 999) / (433, 983) | (1.443, 1.427) |
+| 2 | (1000, 400) | (1443, 570) / (1437, 563) | (1.443, 1.425) |
+| 3 | (1400, 900) | (2021, 1285) / (2013, 1267) | (1.444, 1.428) |
+
+- `prompt_tokens: 1738` every run — transport still 1:1 (criterion 3 ✓).
+- Claimed size 2337×1433 / 2337×1456 — stable, but 1.44× too big (criterion 2 ✗).
+- Ratios uniform ±0.1% and stable across runs (criterion 1 ✗ on absolute
+  value, but the scatter is gone).
+
+**Verdict: the mrope fix is verified; the strict pass criteria are NOT met
+by a pre-existing, separate bias.** The h/w-loss signature (scattered
+x-ratios 1.19–2.38, circle swaps, non-deterministic size claims) is GONE —
+all three circles now localize at the *identical* ratio, in correct
+left-to-right order, stable across runs. What remains is a uniform ~1.44×
+scale: the model reports in a canvas 1.44× too big AND claims the image is
+that size (self-consistent — normalizing by the claimed size lands on the
+truth: 433·1622/2337 = 300.5). The pre-patch run 1 claimed the same
+2337×1459, so this scale bias predates and is independent of the mrope bug;
+**do NOT revert** — reverting restores the swap/scatter while the 1.44×
+bias stays anyway. Practical path: normalize reported coords by the
+model's claimed image size, or rely on coords_check_loop (it converged from
+the worse biased+scattered model in 2 iterations).
+
 **After the fix:** switch the agents to `Snapshot` + `Click(label=N)` as the
 primary path (removes pixel estimation entirely), keep the 0–1000 convention
 for the fallback, and use `region=` zoom for small targets.
@@ -346,4 +378,62 @@ for the fallback, and use `region=` zoom for small targets.
 | `re_20261103-135312-2521` | live-tree file sections for patch adaptation |
 | `re_20261103-140828-9695` | patch 0015 applied to live tree (check+apply+py_compile OK) |
 | `re_20261103-140902-1874` | CPU axis-map verification (all pass) |
+| `re_20261103-202404-8591` | **crash log: `TypeError ... missing 'MROPE'`** (patch 0015 launch bug, all 8 ranks, 19:36) |
+| `re_20261103-202831-6221` | live-tree fix: insert `MROPE=mrope` into the kernel launch (py_compile OK) |
+| `re_20261103-210600-0471` | post-restart boot gate: `pools=KV + MAMBA + INDEXER`, 0 MROPE errors |
+| (local, 21:05) | **post-patch A/B x3** (see §8 "A/B result" — uniform 1.44× bias, mrope scatter gone) |
 | `mcp_shot.png` / `winb_shot.png` | byte-level tool probes (1920×810 @4.0 local / 1622×1018 win-b) |
+| (local, 2026-11-03 late) | **convention test x2 sizes + blank-size probe** — see §10 (native 0–1000 exact; inputs `grounding_conv_input.png`) |
+
+## 10. RESOLVED (2026-11-03): the 1.44× is a convention artifact — the native 0–1000 grid is exact
+
+Ran the §4 experiments of `prompt-image-grounding.md` against the patched
+boot (all via `scripts/bench/grounding_conv.mjs`, new script, temperature 0,
+thinking off):
+
+**Exp. 1 — the decisive convention test (PASSED, twice, two sizes).**
+Same three circles, prompt asks for the model's NATIVE convention: relative
+coords in [0, 1000] of the image.
+
+| size | reported centers_rel | truth/real-size×1000 | max err |
+|---|---|---|---|
+| 1622×1018 | (185,688) (617,393) (863,884) | (185,688) (617,393) (863,884) | **0.1 unit = 0.1 px** |
+| 1920×1080 | (521,371) (156,648) (729,833) | (521,370) (156,648) (729,833) | **0.1 unit = 0.1 px** |
+
+The bias hypothesis from §4 ("if the internal canvas really is the 1.44×
+one, the 0–1000 answers would be ~1/1.44 of correct") is REFUTED: the
+answers land exactly on truth ÷ REAL size. The model's perception is
+pixel-perfect; only its absolute-px *translation* is wrong.
+
+**Exp. 2 — size dependence (absolute mode).** At 1920×1080 the absolute
+prompt gives a uniform 1.22× bias (not 1.44×) and claims 2346×1354 — vs
+2337×1433 at 1622×1018. The claimed canvas is ~constant ≈ 2340×1400
+REGARDLESS of input size (a fixed anchor, not a multiplier), and the
+absolute bias = claimed ÷ real. Confirms: absolute-px output is
+unrecoverable per-image unless you normalize by the claimed size, and the
+clean fix is to never ask for absolute px.
+
+**Exp. 3 — blank size-only.** A blank 1622×1018 PNG, size-only question →
+claims **1000×667** — the 0–1000 convention leaking out when no anchors
+are present. The "size claim" is a verbalization artifact, not a
+perceptual canvas; the vision path itself is fine (exp. 1 proves it).
+
+**Conclusion.** The checkpoint's native grounding convention is relative
+0–1000 of the original image (matches the §5 Qwen3-VL table). Forcing
+absolute px makes it translate through a fabricated ~2340×1400 canvas —
+self-consistent but wrong; the model's perception is exact.
+
+**Fix (client-side, zero server change):**
+`x_click = x_rel / 1000 × W_real`, `y_click = y_rel / 1000 × H_real`.
+All agent-facing guidance pinned to the native convention (KB README +
+coords_check_loop SKILL.md). `coords_check_loop` stays as the safety net;
+`Snapshot`+`Click(label=N)` remains the primary path.
+
+**Regression gates:** `node scripts\bench\grounding_conv.mjs` (native
+convention — expect PASS, errors <10 units) and
+`node scripts\bench\grounding_ab.mjs` (absolute mode — expect the uniform
+claimed-canvas bias; use it to detect vision-path changes). Re-run after
+any vision-path change. Gotcha: the model's enumeration order is NOT
+stable (x-sorted at 1622×1018, input order at 1920×1080) — the conv script
+matches greedily by nearest expectation; the ab script's x-order warning
+still applies.

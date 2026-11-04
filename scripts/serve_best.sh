@@ -87,7 +87,12 @@ if [[ "${SKIP_WARMUP:-0}" != "1" ]]; then
 warmup_pid=$!
 fi
 
-bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log
+# Per-boot copy alongside the usual serve.log (a restart no longer truncates
+# the previous incident's server-side log). serve.log stays the "latest" tail
+# because watch_server_leaks.ps1 and the docs reference that fixed path.
+LOG="logs/serve.$(date +%Y%m%d-%H%M%S).log"
+echo "Per-boot log: $LOG"
+bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log "$LOG"
 rc=${PIPESTATUS[0]}
 set -e
 

@@ -49,7 +49,12 @@ export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.88}" CTX="$CT
 
 trap 'true' INT   # wrapper survives Ctrl+C so the cleanup sweep below still runs
 set +e
-bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log
+# Per-boot copy alongside the usual serve.log (a restart no longer truncates
+# the previous incident's server-side log). serve.log stays the "latest" tail
+# because watch_server_leaks.ps1 and the docs reference that fixed path.
+LOG="logs/serve.$(date +%Y%m%d-%H%M%S).log"
+echo "Per-boot log: $LOG"
+bash scripts/serve.sh "$@" 2>&1 | tee logs/serve.log "$LOG"
 rc=${PIPESTATUS[0]}
 set -e
 

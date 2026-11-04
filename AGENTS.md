@@ -25,7 +25,7 @@ stays armed for a few days; patch 0014 is still uncommitted in the
 engine tree and upstream PR #39893 is still open — rebase if it merges
 with different mechanics.
 
-## Open Thread — UI misclick / grounding (ROOT CAUSE FOUND: patch 0015, A/B pending restart)
+## Open Thread — UI misclick / grounding (RESOLVED 2026-11-03: 0015 verified + 1.44× = convention artifact, native 0–1000 grid is exact)
 
 `docs/ui-misclick-research.md`: agents misclicking screenshots is NOT an
 image-resize problem (pipeline proven 1:1 end-to-end — the "vLLM 1.0M
@@ -37,14 +37,52 @@ tree; **patch 0015** (`0015-mrope-fused-rope-fix.patch`, in `apply_patches.sh`)
 is applied to the tree (uncommitted) and CPU-verified — activates on the next
 server restart. A/B: `node scripts\bench\grounding_ab.mjs` after restart
 (pass = marker centers within a few % + claimed image size ≈ 1622×1018).
+**A/B RAN 2026-11-03 21:05 (see §8 "A/B result"): the mrope fix WORKS** —
+the pre-patch scatter/circle-swaps (x-ratios 1.19–2.38, non-deterministic
+size claims) are gone; all 3 circles localize at an identical ratio (±0.1%)
+in correct order, stable across runs. **But a uniform ~1.44× scale remains**
+(model reports in a canvas 1.44× too big AND claims the image is that size —
+self-consistent; normalize by the claimed size and it's exact). That bias
+predates 0015 (pre-patch run 1 claimed the same 2337×1459) and is a separate
+issue — **do NOT revert 0015**.
+**RESOLVED 2026-11-03 (`docs/ui-misclick-research.md` §10): the residual
+1.44× is a CONVENTION artifact, not a perception bug.** Asked in the
+model's native convention (relative 0–1000 of the image), grounding is
+EXACT (≤0.1 px error at 1622×1018 and 1920×1080 — `node
+scripts\bench\grounding_conv.mjs`, PASS). Forced to absolute px, the model
+translates through a fabricated ~2340×1400 canvas (size-independent anchor;
+blank-image size-only claim is 1000×667 — the convention leaking out).
+**Fix = client-side, zero server change: always ask for 0–1000 relative
+coords, denormalize `x_click = x_rel/1000 × W_real`.** Guidance pinned in
+KB README + coords_check_loop SKILL.md; regression gates:
+`grounding_conv.mjs` (native, expect PASS) + `grounding_ab.mjs` (absolute,
+expect the uniform bias — detects vision-path changes). Gotcha: the
+model's enumeration order is NOT stable (x-sorted vs input order) — match
+by nearest expectation, not by index.
+
+**0015 had a launch bug (FOUND + FIXED 2026-11-03):** the first boot after
+applying it crashed all 8 ranks at CUDA-graph warmup with
+`TypeError: dynamic_func() missing 1 required positional argument: 'MROPE'`
+(`serve.log`, 19:33→19:36) — the patch added `MROPE: tl.constexpr` to the
+kernel signature but the launcher never passed `MROPE=mrope` ("CPU-verified"
+never launched the kernel). Fixed by inserting `MROPE=mrope,` between
+`HAS_GATE` and `ENABLE_PDL` in `fused_qk_rmsnorm_rope_gate.py` (live tree,
+py_compile OK) and the same line added to the patch file (hunk
+`@@ -178,24 +200,27 @@`; `git apply --check` passes on a pristine tree).
+Any tree freshly patched with 0015 must include this line or it crashes the
+same way on first boot.
+
 Post-fix: agents should prefer `Snapshot` + `Click(label=N)` (UIA element
 clicking, no pixel estimation) over `Screenshot` + `Click(loc)`. For
 UIA-opaque targets (canvas/custom-drawn/remote-desktop, no accessible
-elements) the `coords_check_loop` skill (user skills dir) verifies a
-screenshot-measured point before clicking: draws a marker on the VM, the
-model self-corrects via a **direct stateless model call** (no OpenCode
-session — forks leak prompts into the parent, verified 3×, and forks are
-top-level rows so the resume sweep can resurrect them), only `VERIFIED`
+elements) the `coords_check_loop` skill (user skills dir, mirrored to
+`b:\ai\setup-remote-environment\.config\opencode\skills\`) verifies a
+screenshot-measured point before clicking: the script draws a marker
+(pixel-exact, GetPixel self-check) on a screenshot YOU provide as a file
+— no MCP screen capture, no model endpoint, no session — and the calling
+agent is the judge (v3: v1's direct model call hardcoded the endpoint;
+v2's forked session leaked prompts to the parent, verified 3×, and forks
+are top-level rows the resume sweep can resurrect). Only `confirmed`
 coords get clicked. Fully tested 2026-11-03: converged (1300,600)→
 (100,28) on the VS Save button in 2 iterations with the unpatched
 (biased) model — the loop compensates for the coordinate-system bias.
