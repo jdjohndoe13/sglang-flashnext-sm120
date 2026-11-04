@@ -106,7 +106,11 @@ args=(
   --ple-offload-embedding --trust-remote-code
   --chat-template "$TARGET_MODEL/chat_template.jinja"
   --reasoning-parser qwen3 --tool-call-parser qwen3_coder
-  --enable-request-time-stats-logging --enable-metrics --watchdog-timeout 1800
+  # --enable-cache-report: every OpenAI response carries usage.prompt_tokens_details.cached_tokens
+  # (the reused prefix length; uncached = prompt_tokens - cached_tokens, there is no separate
+  # uncached field). Zero cost — the count is already computed (same value as cached_input_len
+  # in the ReqTimeStats lines). Without the flag the field is absent (prompt_tokens_details=null).
+  --enable-request-time-stats-logging --enable-metrics --enable-cache-report --watchdog-timeout 1800
 )
 [[ "$CPU_OFFLOAD_GB" -gt 0 ]] && args+=( --cpu-offload-gb "$CPU_OFFLOAD_GB" )
 [[ -n "$MAX_TOTAL_TOKENS" ]] && args+=( --max-total-tokens "$MAX_TOTAL_TOKENS" )
