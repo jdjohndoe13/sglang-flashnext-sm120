@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Apply the fourteen sm120 patches to ./sglang-official (branch qwen4-main-squashed).
+# Apply the sixteen sm120 patches to ./sglang-official (branch qwen4-main-squashed).
 # IDEMPOTENT: each patch is skipped if already applied (or conflicting) — safe to re-run
 # after every `git pull` of this repo. Editable install => no rebuild needed afterwards.
 #
@@ -46,6 +46,12 @@
 #          width positional info discarded -> systematic grounding/click errors
 #          (upstream #35345/#35772/#36762). Fixes misclick accuracy on image
 #          requests; no effect on text-only.)
+#   0016  Fast image processor on CPU (env-gated) [git apply]
+#         (serve.sh sets SGLANG_MM_PROCESSOR_DEVICE=cpu; _fast_image_processor_device
+#          then returns "cpu" instead of cuda:{base_gpu_id}. The GPU-0 OOM that
+#          caused the pil pin (2026-09-11) stays dead, and the 14 s/image pil
+#          stall goes away (measured 1.2 s vs 368 s for 26 screenshots;
+#          docs/mm-preprocess-stall.md). Inert without the env var.)
 set -euo pipefail
 # Locate the repo root (script normally lives at <repo>/scripts/). If run in an exotic way
 # (stdin/`bash -s`), fall back to cwd when it looks like the repo root, else fail loudly.
@@ -95,6 +101,7 @@ apply_one 0012-hicache-load-fence.patch apply
 apply_one 0013-mamba-cow-load-fence.patch apply
 apply_one 0014-hicache-qsa-indexer-state.patch apply
 apply_one 0015-mrope-fused-rope-fix.patch apply
+apply_one 0016-mm-processor-cpu-device.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then

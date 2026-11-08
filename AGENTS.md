@@ -3,6 +3,26 @@
 Deployment kit for Qwen3.8-Flash-Next-NVFP4 on 8× RTX 5090 (sm_120) via SGLang.
 Start with `README.md` (ops table + verified profiles) and `docs/STATUS.md` (ops guide).
 
+## Open Thread — mm-preprocess stall / "requests vanish from the scheduler" (RESOLVED 2026-11-08: fix implemented, awaiting restart)
+
+`bug-scheduler.md` + `docs/mm-preprocess-stall.md`: requests did NOT vanish
+from the scheduler — they stalled in the tokenizer manager's multimodal
+preprocessing, *before* the scheduler (invisible to `#queue-req` and every
+log line). The September `--image-processor-backend pil` pin (GPU-0 OOM
+fix) is the culprit: the PIL Qwen2VL processor measures **14 s/image**
+(368 s for 26 screenshots; float64 temporaries, ~4.5M page-faults/s) on a
+2-worker pool with no timeout. The proxy's 300 s timeout fires first; the
+resend is fast because the mm embedding cache is warm. Upstream: no issue/PR
+matches; upstream main still hardcodes `cuda:{base_gpu_id}` for the fast
+processor. **Fix = patch 0016** (`0016-mm-processor-cpu-device.patch`, in
+`apply_patches.sh`): serve.sh now sets `SGLANG_MM_PROCESSOR_DEVICE=cpu` +
+backend `torchvision` → fast processor runs on CPU (measured **1.2 s/26
+images**, CPU-only, so the GPU-0 OOM stays dead). After the user restarts
+(`llmqwen`): verify the boot line shows `--image-processor-backend
+torchvision` and `SGLANG_MM_PROCESSOR_DEVICE=cpu` in `logs/serve.log`
+line 1, and a 26-screenshot request reaches the scheduler (ReqTimeStats)
+within ~10 s. Patch 0016 is uncommitted in the engine tree (like 0012-0015).
+
 ## Open Thread — hallucination investigation (RESOLVED: root cause found, fix proven, A/B PASSED)
 
 `hallucination-investigation.md` §14: root cause = the QSA indexer state

@@ -91,11 +91,18 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}" TOKENIZERS_PARALLELISM=false
 export MAX_JOBS="${MAX_JOBS:-4}" CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
 export FLASHINFER_NINJA_JOBS="${FLASHINFER_NINJA_JOBS:-4}" FLASHINFER_NVCC_THREADS="${FLASHINFER_NVCC_THREADS:-2}"
 export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-4}"
+# Patch 0016: run the fast (torchvision) image processor on CPU. The tokenizer
+# process shares GPU 0 with the scheduler (a full card OOMs the fast path —
+# 2026-09-11), and the old pil fallback measured 14 s/image on this box vs
+# ~30 ms/image CPU-torchvision (docs/mm-preprocess-stall.md). With both set,
+# preprocessing is fast AND CPU-only. SGLANG_MM_PROCESSOR_DEVICE=cpu is inert
+# unless the fast backend is active.
+export SGLANG_MM_PROCESSOR_DEVICE="${SGLANG_MM_PROCESSOR_DEVICE:-cpu}"
 
 args=(
   serve --model-path "$TARGET_MODEL" --load-format safetensors
   --served-model-name "$SERVED_NAME" --host 0.0.0.0 --port "$PORT" --tp "$TP" \
-  --image-processor-backend "${MM_IMG_BACKEND:-pil}"
+  --image-processor-backend "${MM_IMG_BACKEND:-torchvision}"
   --dtype bfloat16 --quantization modelopt_fp4 --kv-cache-dtype "$KVDTYPE"
   --mem-fraction-static "$MEMFRAC" --context-length "$CTX"
   --page-size 64 --max-running-requests "$MAXREQ" --chunked-prefill-size 4096

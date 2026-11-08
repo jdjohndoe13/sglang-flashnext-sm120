@@ -23,7 +23,7 @@ scripts are re-pointed and re-tuned for this box (32 GB/card, TP8, 1 TB host RAM
 Run (after `git pull` on the machine):
 
 ```bash
-bash scripts/apply_patches.sh   # once per pull: the sm120 patches (0001-0014) into sglang-official (no rebuild)
+bash scripts/apply_patches.sh   # once per pull: the sm120 patches (0001-0016) into sglang-official (no rebuild)
 ./scripts/serve_best.sh         # DEFAULT: TP8+EP8, 8-way, fp8 KV + fp8 stack, 262144 ctx, MEMFRAC 0.80, :1025
 ./scripts/serve_best_kv_offload.sh  # DAILY (llmqwen): serve_best + HiCache host tier: 512 GB RAM
                                  # total (64 GiB/rank x 8; KV + mamba state + QSA indexer
@@ -85,7 +85,10 @@ valid for TP 1/2/5 — none of which fits 8×32 GB. Fallback candidate (untested
   array) used to get a 400; the patch drops the invalid field before validation.
 - `serve.sh` pins `--image-processor-backend pil`: the transformers *fast* image processor runs
   torch ops on GPU 0 inside the tokenizer process, which OOMs when the scheduler has filled the
-  card. The pil backend preprocesses on CPU (~tens of ms per image, overlapped with GPU work).
+  card. ~~The pil backend preprocesses on CPU (~tens of ms per image)~~ **DISPROVEN 2026-11-08:
+  measured 14 s/image (368 s for 26 images) on this box — the mm path is the "requests vanish
+  from the scheduler" incident; see `docs/mm-preprocess-stall.md` for the measured fix
+  (torchvision backend + CPU device, 1.2 s/26 images, pending approval).**
 - `serve.sh` prepends `.venv/bin` to `PATH` — sglang's JIT builder shells out to `ninja`, which
   only lives in the venv.
 - `serve_best.sh` runs a post-ready warmup (one short + one ~40k-token request) so the lazy

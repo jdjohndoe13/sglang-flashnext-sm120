@@ -65,7 +65,10 @@ Official sglang `qwen4-main-squashed` branch + local commits on `sm120-wy` (see 
 - **Image requests OOM'd on GPU 0** (00:14 run, MEMFRAC 0.85): the transformers *fast* image
   processor runs torch ops on GPU 0 inside the tokenizer process — on a card with <100 MiB
   free it dies. Fix: `--image-processor-backend pil` (CPU-only preprocessing; default in
-  serve.sh). With pil the on-GPU preproc OOM is gone, but MEMFRAC 0.85 still fails
+  serve.sh). **⚠ 2026-11-08: the pil pin is itself the mm-preprocess stall incident
+  (14 s/image measured; requests stall before the scheduler and look "vanished") — see
+  `docs/mm-preprocess-stall.md`; the fix is torchvision backend + CPU device (1.2 s/26
+  images), pending approval.** With pil the on-GPU preproc OOM is gone, but MEMFRAC 0.85 still fails
   (2026-09-14: long prefill CUDA-OOMs with ~1.0 GB free) — 0.80 is the validated default.
 - **Tool-call requests 400**: `"required": {}` (malformed tool schema from some agent
   frameworks) fails jsonschema validation → patch 0009 drops malformed `required` instead.
