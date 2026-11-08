@@ -74,7 +74,7 @@ mkdir -p logs
 # Concurrency is env-overridable; the three knobs MUST move together (see below).
 MAXREQ="${MAXREQ:-32}"
 MAX_TOTAL_TOKENS="${MAX_TOTAL_TOKENS:-1048576}"   # KV-pool cap — see the block below the echo
-echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, ${MAXREQ}-way, HiCache ${HICACHE_SIZE:-64} GiB/rank = $(( ${HICACHE_SIZE:-64} * 8 )) GB total host tier, KV pool cap ${MAX_TOTAL_TOKENS}). Ctrl+C to stop. Logging to logs/serve.log"
+echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, ${MAXREQ}-way, HiCache ${HICACHE_SIZE:-55} GiB/rank = $(( ${HICACHE_SIZE:-55} * 8 )) GB total host tier, KV pool cap ${MAX_TOTAL_TOKENS}). Ctrl+C to stop. Logging to logs/serve.log"
 
 # MAXREQ / CUDAGRAPH_MAXBS / MAMBA_CACHE must be consistent:
 #   * CUDAGRAPH_MAXBS >= MAXREQ or decode batches above it fall back to eager (no graph) —
@@ -97,7 +97,7 @@ echo "Starting sglang in the foreground (TP=${TP:-8}, EP=${EP_SIZE:-8}, ${MAXREQ
 export TP="${TP:-8}" EP_SIZE="${EP_SIZE:-8}" MEMFRAC="${MEMFRAC:-0.80}" CTX="${CTX:-262144}" MAXREQ="$MAXREQ" \
   MAX_TOTAL_TOKENS="$MAX_TOTAL_TOKENS" \
   LINEAR_BACKEND=flashinfer SSM_DTYPE=bfloat16 MAMBA_RADIX=extra_buffer \
-  KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=1 HICACHE_SIZE="${HICACHE_SIZE:-64}" \
+  KVDTYPE=fp8_e4m3 SPEC=1 HICACHE=1 HICACHE_SIZE="${HICACHE_SIZE:-55}" \
   GDN_MTP_CACHE_MODE=none \
   SGLANG_SM120_LOWM_FP8_WEIGHT=1 SGLANG_SM120_LM_HEAD_FP8=1 \
   CUDAGRAPH_MAXBS="${CUDAGRAPH_MAXBS:-$MAXREQ}" MAMBA_CACHE="${MAMBA_CACHE:-$((6 * MAXREQ))}" CPU_OFFLOAD_GB=0 \
