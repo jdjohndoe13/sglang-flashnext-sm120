@@ -1,6 +1,12 @@
 # Multimodal preprocessing stall — the "requests vanish from the scheduler" bug
 
-**Status: ROOT CAUSE FOUND, FIX MEASURED, awaiting deployment approval.**
+**Status: ROOT CAUSE FOUND, FIX MEASURED + DEPLOYED (2026-11-08 16:20), awaiting
+restart.** The engine tree on testcomp2 now carries patch 0016 and the kit's
+`serve.sh` carries the new flags; the running server (pid 1164753) is untouched
+and activates the fix on the next `llmqwen` restart. Verification gate after
+restart: boot line in `logs/serve.log` shows `--image-processor-backend
+torchvision` + `SGLANG_MM_PROCESSOR_DEVICE=cpu`, and a 26-screenshot request
+reaches the scheduler (ReqTimeStats) within ~10 s.
 Investigated 2026-11-08 against `bug-scheduler.md` (the 13:36 incident report).
 Live box: testcomp2. All evidence in `.slim/deepwork/ses_e443d5d79ffer7xOjA4sAKC36Y.md`
 (claim register + forensic rounds 1–24).
