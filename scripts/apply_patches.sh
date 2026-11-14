@@ -46,6 +46,11 @@
 #          width positional info discarded -> systematic grounding/click errors
 #          (upstream #35345/#35772/#36762). Fixes misclick accuracy on image
 #          requests; no effect on text-only.)
+#   0017  Abort dispatched requests on client disconnect [git apply]
+#         (upstream #36333 / PR #35255: the disconnect cleanup dropped rid_to_state
+#          before the 2s abort task ran, so the abort was skipped and the scheduler
+#          kept decoding the zombie to the context cap, flooding 'state was deleted
+#          in TokenizerManager'. Fixes the spam + the wasted GPU time.)
 #   0016  Fast image processor on CPU (env-gated) [git apply]
 #         (serve.sh sets SGLANG_MM_PROCESSOR_DEVICE=cpu; _fast_image_processor_device
 #          then returns "cpu" instead of cuda:{base_gpu_id}. The GPU-0 OOM that
@@ -102,6 +107,7 @@ apply_one 0013-mamba-cow-load-fence.patch apply
 apply_one 0014-hicache-qsa-indexer-state.patch apply
 apply_one 0015-mrope-fused-rope-fix.patch apply
 apply_one 0016-mm-processor-cpu-device.patch apply
+apply_one 0017-abort-on-disconnect-before-discard.patch apply
 
 echo "done: $applied applied, $skipped skipped."
 if [[ "$skipped" -gt 0 ]]; then

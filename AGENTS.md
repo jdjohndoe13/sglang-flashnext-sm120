@@ -3,6 +3,23 @@
 Deployment kit for Qwen3.8-Flash-Next-NVFP4 on 8× RTX 5090 (sm_120) via SGLang.
 Start with `README.md` (ops table + verified profiles) and `docs/STATUS.md` (ops guide).
 
+## Open Thread — zombie request after client disconnect / log spam (RESOLVED 2026-11-14:
+patch 0017 applied, awaiting restart)
+
+`docs/abort-zombie.md`: a cancelled streaming request (Ctrl+C on the client) left the
+scheduler decoding a ZOMBIE to the context cap (252,650 tokens / 16.2 min / 52,254
+"Received output for rid=... but the state was deleted in TokenizerManager" lines at
+~70/s). Root cause = upstream sgl-project/sglang#36333: the disconnect cleanup
+(`_discard_pending_req_states`) pops `rid_to_state` before the 2s abort task runs, so
+`abort_request`'s `rid not in rid_to_state` guard silently skips the scheduler abort.
+Fixed by **patch 0017** (`0017-abort-on-disconnect-before-discard.patch`, port of merged
+upstream PR #35255; applied to the live tree, in `apply_patches.sh`). After the next
+`llmqwen` restart, a client interrupt = ONE INFO line
+("Client disconnected for rid=...; aborting dispatched request.") and the decode stops
+within ~2 s. Also: the 16:10 restart failure was EADDRINUSE on the torch.distributed
+rendezvous port (39133) — the old engine's main process was still tearing down; the
+second retry won.
+
 ## Open Thread — mm-preprocess stall / "requests vanish from the scheduler" (RESOLVED 2026-11-08: fix implemented, awaiting restart)
 
 `bug-scheduler.md` + `docs/mm-preprocess-stall.md`: requests did NOT vanish
